@@ -97,6 +97,8 @@ class TokenizedCode
 		bool insideStringToken=false;
 		bool stringTypeDoubleQuotes=false;
 		
+		bool insideComment=false;
+		
 		while(true)
 		{
 			if(p>=inputCode.size()) break;
@@ -106,9 +108,11 @@ class TokenizedCode
 			if(c=='\n')
 			{
 				insideToken=false;
+				insideComment=false;
 				lineNumber++;
 				lineStart=p+1;
 			}
+			else if(insideComment){}
 			else if(insideToken)
 			{
 				if(insideStringToken)
@@ -142,7 +146,26 @@ class TokenizedCode
 					else
 					{
 						insideToken=false;
-						tokens.emplace_back(string(1,c),lineNumber,1+p-lineStart);
+						
+						bool isCommentStart=false;
+						if(c=='/')
+						{
+							if(p+1<inputCode.size())
+							{
+								if(inputCode[p+1]=='/')
+								{
+									isCommentStart=true;
+								}
+							}
+						}
+						if(isCommentStart)
+						{
+							insideComment=true;
+						}
+						else
+						{
+							tokens.emplace_back(string(1,c),lineNumber,1+p-lineStart);
+						}
 					}
 				}
 			}
@@ -164,7 +187,25 @@ class TokenizedCode
 				else if(isSpaceCharacter(c)){}
 				else
 				{
-					tokens.emplace_back(string(1,c),lineNumber,1+p-lineStart);
+					bool isCommentStart=false;
+					if(c=='/')
+					{
+						if(p+1<inputCode.size())
+						{
+							if(inputCode[p+1]=='/')
+							{
+								isCommentStart=true;
+							}
+						}
+					}
+					if(isCommentStart)
+					{
+						insideComment=true;
+					}
+					else
+					{
+						tokens.emplace_back(string(1,c),lineNumber,1+p-lineStart);
+					}
 				}
 			}
 			
@@ -445,6 +486,7 @@ class CodeTopFunction
 	string name;
 	bool returnsSomething=false;
 	Type returnType;
+	bool returnsReference=false;
 	vector<CodeTopFunctionParameter> parameters;
 	
 	bool compilerGenerated=false;
@@ -522,7 +564,30 @@ class CodeTopFunction
 		else
 		{
 			returnsSomething=true;
-			returnType=Type(code,t);
+			if(code.get(t)=="ref")
+			{
+				t++;
+				returnsReference=true;
+				if(code.get(t)!="(")
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				t++;
+				
+				returnType=Type(code,t);
+				
+				if(code.get(t)!=")")
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				t++;
+			}
+			else
+			{
+				returnType=Type(code,t);
+			}
 			
 			if(code.get(t)!=")")
 			{
@@ -590,7 +655,8 @@ class CodeTopFunction
 		
 		if(returnsSomething)
 		{
-			str+=string("(")+returnType.toString()+")";
+			if(returnsReference) str+=string("(ref(")+returnType.toString()+"))";
+			else str+=string("(")+returnType.toString()+")";
 		}
 		else str+="()";
 		
@@ -772,6 +838,8 @@ class CodeAssembly
 	
 	string stringCode;
 	int numberOfStrings=0;
+	
+	string identifierDataCode;
 };
 
 size_t toAlign(size_t offset,size_t alignment)
@@ -839,6 +907,25 @@ class LoopContext
 	}
 };
 
+class TryContext
+{
+	public:
+	
+	bool inTry=false;
+	
+	int localIndexStart=0;
+	
+	int catchLabel=0;
+	
+	TryContext(){}
+	TryContext(int _localIndexStart,int _catchLabel)
+	{
+		inTry=true;
+		localIndexStart=_localIndexStart;
+		catchLabel=_catchLabel;
+	}
+};
+
 class FunctionContext
 {
 	public:
@@ -857,12 +944,16 @@ class FunctionContext
 	
 	int indexOfVariableToReturn=-1;
 	
+	int indexOfVariableToThrow=-1;
+	
 	int functionLocalIndexStart=0;
 	int scopeLocalIndexStart=0;
 	
 	int labelsCreated=0;
 	
 	LoopContext loopContext;
+	
+	TryContext tryContext;
 	
 	int enterScope(int newScopeLocalIndexStart)
 	{
@@ -886,6 +977,16 @@ class FunctionContext
 	{
 		loopContext=oldLoopContext;
 	}
+	TryContext startTry(const TryContext& newTryContext)
+	{
+		TryContext oldTryContext=tryContext;
+		tryContext=newTryContext;
+		return oldTryContext;
+	}
+	void endTry(const TryContext& oldTryContext)
+	{
+		tryContext=oldTryContext;
+	}
 };
 
 class ExpressionValue
@@ -899,6 +1000,19 @@ class ExpressionValue
 	bool isIntegerLiteral=false;
 };
 
+class CodeIdentifier
+{
+	public:
+	
+	string name;
+	
+	CodeIdentifier(){}
+	CodeIdentifier(const string& _name)
+	{
+		name=_name;
+	}
+};
+
 class CodeTop
 {
 	public:
@@ -908,8 +1022,11 @@ class CodeTop
 	vector<CodeTopGlobalVariable> globalVariables;
 	
 	NamedVector<DataType> dataTypes;
+	int dataTypesPassByReferenceStartIndex=0;
 	size_t pointerSize=8;
 	size_t pointerAlignment=8;
+	
+	NamedVector<CodeIdentifier> codeIdentifiers;
 	
 	CodeAssembly assembly;
 	
@@ -992,14 +1109,19 @@ class CodeTop
 	public:
 	void processParsedData(TokenizedCode& code)
 	{
-		dataTypes.add(DataType("u8",true,true,true,1,1));
-		dataTypes.add(DataType("u16",true,true,true,2,2));
-		dataTypes.add(DataType("u32",true,true,true,4,4));
-		dataTypes.add(DataType("u64",true,true,true,8,8));
-		dataTypes.add(DataType("i8",true,true,true,1,1));
-		dataTypes.add(DataType("i16",true,true,true,2,2));
-		dataTypes.add(DataType("i32",true,true,true,4,4));
-		dataTypes.add(DataType("i64",true,true,true,8,8));
+		//Keep integer types in this same position and order
+		dataTypes.add(DataType("u8",true,true,true,1,1));//Position 0
+		dataTypes.add(DataType("u16",true,true,true,2,2));//Position 1
+		dataTypes.add(DataType("u32",true,true,true,4,4));//Position 2
+		dataTypes.add(DataType("u64",true,true,true,8,8));//Position 3
+		dataTypes.add(DataType("i8",true,true,true,1,1));//Position 4
+		dataTypes.add(DataType("i16",true,true,true,2,2));//Position 5
+		dataTypes.add(DataType("i32",true,true,true,4,4));//Position 6
+		dataTypes.add(DataType("i64",true,true,true,8,8));//Position 7
+		
+		dataTypesPassByReferenceStartIndex=dataTypes.size();
+		
+		dataTypes.add(DataType("dynamic",false,false,true,pointerSize,pointerAlignment));
 		
 		for(int i=0;i<classes.size();i++)
 		{
@@ -1147,6 +1269,14 @@ class CodeTop
 		{
 			return string("F")+to_string(functionIndex);
 		}
+		string getAssemblyEmptyFunctionName()
+		{
+			return "F_EMPTY";
+		}
+		string getAssemblyIntegerCopyFunctionName(int size)
+		{
+			return string("F_INTEGER_COPY_")+to_string(size*8);
+		}
 		string getAssemblyMethodName(int classIndex,int methodIndex)
 		{
 			return string("C")+to_string(classIndex)+"F"+to_string(methodIndex);
@@ -1162,6 +1292,10 @@ class CodeTop
 		string getAssemblyLabelName(int labelIndex)
 		{
 			return string(".L")+to_string(labelIndex);
+		}
+		string getAssemblyTypeLabelName(int labelIndex)
+		{
+			return string("T")+to_string(labelIndex);
 		}
 		void getTypeSizeAndAlignment(const Type& type,size_t& size,size_t& alignment,bool isReference)
 		{
@@ -1215,11 +1349,33 @@ class CodeTop
 		}
 		int findMethodIndex(int classIndex,const string& methodName)
 		{
+			if(methodName=="constructor")
+			{
+				return findEmptyConstructorIndex(classIndex);
+			}
+			else
+			{
+				for(int i=0;i<classes[classIndex].methods.size();i++)
+				{
+					if(classes[classIndex].methods[i].name==methodName)
+					{
+						return i;
+					}
+				}
+				return -1;
+			}
+		}
+		int findEmptyConstructorIndex(int classIndex)
+		{
+			string methodName="constructor";
 			for(int i=0;i<classes[classIndex].methods.size();i++)
 			{
 				if(classes[classIndex].methods[i].name==methodName)
 				{
-					return i;
+					if(classes[classIndex].methods[i].parameters.size()==0)
+					{
+						return i;
+					}
 				}
 			}
 			return -1;
@@ -1255,6 +1411,211 @@ class CodeTop
 			}
 			return nullptr;
 		}
+		int getIdentifierIndex(const string& name)
+		{
+			try
+			{
+				return codeIdentifiers.getIndexOf(name);
+			}
+			catch(...)
+			{
+				return -1;
+			}
+		}
+		int createIdentifier(const string& name)
+		{
+			int index=getIdentifierIndex(name);
+			if(index==-1)
+			{
+				codeIdentifiers.add(CodeIdentifier(name));
+				return codeIdentifiers.size()-1;
+			}
+			return index;
+		}
+		void compileIdentifierData()
+		{
+			assembly.functionCode+=getAssemblyEmptyFunctionName()+":\n";
+			assembly.functionCode+="clc\n";
+			assembly.functionCode+="ret\n\n";
+			
+			for(int i=0;i<4;i++)
+			{
+				int size=(1<<i);
+				assembly.functionCode+=getAssemblyIntegerCopyFunctionName(size)+":\n";
+				assembly.functionCode+=string("mov [")+parameterRegisters[0]+"],"+getSizedRegister(parameterRegisters[1],size)+"\n";
+				assembly.functionCode+="clc\n";
+				assembly.functionCode+="ret\n\n";
+			}
+			
+			
+			assembly.identifierDataCode+="\n\n";
+			
+			assembly.identifierDataCode+="datatype_count:\n";
+			assembly.identifierDataCode+=string("dq ")+to_string(dataTypes.size())+"\n";
+			
+			assembly.identifierDataCode+="datatype_start:\n";
+			for(int i=0;i<dataTypes.size();i++)
+			{
+				assembly.identifierDataCode+=string("dq ")+getAssemblyTypeLabelName(i)+"\n";
+			}
+			
+			assembly.identifierDataCode+="\n";
+			
+			for(int i=0;i<dataTypes.size();i++)
+			{
+				assembly.identifierDataCode+=compileIdentifierDataOfType(i);
+			}
+		}
+		string compileIdentifierDataOfType(int typeIndex)
+		{
+			string output;
+			
+			output+=getAssemblyTypeLabelName(typeIndex)+":\n";
+			
+			DataType& dataType=dataTypes[typeIndex];
+			
+			output+=string("dq ")+to_string(dataType.size)+"\n";
+			output+=string("dq ")+to_string(dataType.alignment)+"\n";
+			
+			if(dataType.isInteger)
+			{
+				output+=string("dq ")+getAssemblyEmptyFunctionName()+"\n";
+				output+=string("dq ")+getAssemblyEmptyFunctionName()+"\n";
+				output+=string("dq ")+getAssemblyIntegerCopyFunctionName(dataType.size)+"\n";
+				
+				output+="dq 0\n";
+				output+="dq 0\n";
+				
+				output+="dq 0\n";
+				output+="dq 0\n";
+			}
+			else if(dataType.name=="dynamic")
+			{
+				int constructorIndex=findFunctionIndex("__dynamic_constructor");
+				int destructorIndex=findFunctionIndex("__dynamic_destructor");
+				int assignmentIndex=findFunctionIndex("__dynamic_assignment_operator");
+				
+				output+=string("dq ")+getAssemblyFunctionName(constructorIndex)+"\n";
+				output+=string("dq ")+getAssemblyFunctionName(destructorIndex)+"\n";
+				output+=string("dq ")+getAssemblyFunctionName(assignmentIndex)+"\n";
+				
+				output+="dq 0\n";
+				output+="dq 0\n";
+				
+				output+="dq 0\n";
+				output+="dq 0\n";
+			}
+			else
+			{
+				output+=compileIdentifierDataOfClass(findClassIndex(dataType.name));
+			}
+			
+			return output;
+		}
+		string compileIdentifierDataOfClass(int classIndex)
+		{
+			string output;
+			
+			CodeTopClass& c=classes[classIndex];
+			
+			int constructorIndex=findMethodIndex(classIndex,"constructor");
+			int destructorIndex=findMethodIndex(classIndex,"destructor");
+			int assignmentIndex=findMethodIndex(classIndex,"=");
+			
+			output+=string("dq ")+getAssemblyMethodName(classIndex,constructorIndex)+"\n";
+			output+=string("dq ")+getAssemblyMethodName(classIndex,destructorIndex)+"\n";
+			output+=string("dq ")+getAssemblyMethodName(classIndex,assignmentIndex)+"\n";
+			
+			string outputAttributes;
+			int attributeCount=0;
+			for(int i=0;i<c.attributes.size();i++)
+			{
+				Type type=c.attributes[i].type;
+				if(type.pointerLevels==0)
+				{
+					int identifierIndex=createIdentifier(c.attributes[i].name);
+					int typeIndex=dataTypes.getIndexOf(type.name);
+					int offset=c.attributes[i].objectOffset;
+					
+					outputAttributes+=string("dq ")+to_string(identifierIndex)+"\n";
+					outputAttributes+=string("dq ")+to_string(typeIndex)+"\n";
+					outputAttributes+=string("dq ")+to_string(offset)+"\n";
+					outputAttributes+="dq 0\n";
+					
+					attributeCount++;
+				}
+			}
+			output+=string("dq ")+to_string(attributeCount)+"\n";
+			output+="dq .attribute_list\n";
+			
+			string outputMethods;
+			vector<string> outputMethodParameters;
+			int methodCount=0;
+			for(int i=0;i<c.methods.size();i++)
+			{
+				CodeTopFunction function=c.methods[i];
+				if(function.name=="constructor" && function.parameters.size()>0) continue;
+				if(function.isOperator) continue;
+				if(function.returnsSomething)
+				{
+					if(function.returnType.pointerLevels>0) continue;
+					if(function.returnsReference) continue;
+				}
+				
+				bool parameterError=false;
+				string outputParameters;
+				for(int j=0;j<function.parameters.size();j++)
+				{
+					Type type=function.parameters[j].type;
+					if(type.pointerLevels>0)
+					{
+						parameterError=true;
+						break;
+					}
+					else
+					{
+						outputParameters+=string("dq ")+to_string(dataTypes.getIndexOf(type.name))+"\n";
+					}
+				}
+				if(parameterError) continue;
+				
+				{
+					int identifierIndex=createIdentifier(function.name);
+					int returnTypeIndex=-1;
+					if(function.returnsSomething) returnTypeIndex=dataTypes.getIndexOf(function.returnType.name);
+					
+					outputMethods+=string("dq ")+to_string(identifierIndex)+"\n";
+					outputMethods+=string("dq ")+getAssemblyMethodName(classIndex,i)+"\n";
+					outputMethods+=string("dq ")+to_string(returnTypeIndex)+"\n";
+					outputMethods+=string("dq ")+to_string(function.parameters.size())+"\n";
+					outputMethods+=string("dq ")+".f"+to_string(methodCount)+"p"+"\n";
+					outputMethods+="dq 0\n";
+					outputMethods+="dq 0\n";
+					outputMethods+="dq 0\n";
+					
+					outputMethodParameters.push_back(outputParameters);
+					
+					methodCount++;
+				}
+			}
+			output+=string("dq ")+to_string(methodCount)+"\n";
+			output+="dq .method_list\n";
+			
+			
+			output+=".attribute_list:\n";
+			output+=outputAttributes;
+			
+			output+=".method_list:\n";
+			output+=outputMethods;
+			for(int i=0;i<outputMethodParameters.size();i++)
+			{
+				output+=string(".f")+to_string(i)+"p"+":\n";
+				output+=outputMethodParameters[i];
+			}
+			
+			
+			return output;
+		}
 	public:
 	void compile(TokenizedCode& code,AssemblyCode& assemblyCode)
 	{
@@ -1279,6 +1640,8 @@ class CodeTop
 		
 		addDefaultFunctions(code);
 		
+		compileIdentifierData();
+		
 		for(int i=0;i<functions.size();i++)
 		{
 			compileFunction(-1,i,functions[i],code);
@@ -1292,12 +1655,20 @@ class CodeTop
 			}
 		}
 		
-		//TODO----
+		int mainFunctionIndex=findFunctionIndex("__main");
+		if(mainFunctionIndex==-1)
+		{
+			code.addError(-1,__LINE__);
+			throw LogicError();
+		}
 		
 		assembly.startCode=string("_start:\n")
 			+"mov "+parameterRegisters[0]+",[rsp]"+"\n"
 			+"lea "+parameterRegisters[1]+",[rsp+8]"+"\n"
-			+"call "+getAssemblyFunctionName(findFunctionIndex("main"))+"\n"
+			+"call "+getAssemblyFunctionName(mainFunctionIndex)+"\n"
+			+"jnc .nothrow\n"
+			+"mov "+returnRegister+",1\n"
+			+".nothrow:\n"
 			+"mov rdi,"+returnRegister+"\n"
 			+"mov rax,60\n"
 			+"syscall\n"
@@ -1311,7 +1682,8 @@ class CodeTop
 			+"\nsection .bss\n\n"
 			+assembly.globalVariableCode
 			+"\nsection .data\n\n"
-			+assembly.stringCode;
+			+assembly.stringCode
+			+assembly.identifierDataCode;
 	}
 	private:
 		void addDefaultFunctions(TokenizedCode& code)
@@ -1330,7 +1702,7 @@ class CodeTop
 		void addDefaultConstructor(TokenizedCode& code,int classIndex)
 		{
 			classes[classIndex].methods.emplace_back(false,"__dc",false,Type(),vector<CodeTopFunctionParameter>(),true);
-			if(findMethodIndex(classIndex,"constructor")==-1)
+			if(findEmptyConstructorIndex(classIndex)==-1)
 			{
 				classes[classIndex].methods.emplace_back(false,"constructor",false,Type(),vector<CodeTopFunctionParameter>(),true);
 			}
@@ -1540,22 +1912,44 @@ class CodeTop
 			NamedVector<LocalVariable>& localVariables=functionContext.baseLocalVariables;
 			
 			{
+				{
+					functionContext.indexOfVariableToThrow=localVariables.size();
+					allocateLocalVariable(localVariables,functionContext,
+						LocalVariable(
+							Type("dynamic",0),
+							false,
+							getNewName(functionContext)
+							));
+				}
+				
 				int inputParameterIndex=0;
 				
 				if(function.returnsSomething)
 				{
 					functionContext.indexOfVariableToReturn=localVariables.size();
-					allocateLocalVariable(localVariables,functionContext,
-						LocalVariable(
-							function.returnType,
-							isTypePassedByReference(function.returnType),
-							getNewName(functionContext)
-							));
-					
-					if(isTypePassedByReference(function.returnType))
+					if(function.returnsReference)
 					{
-						functionCode+=movInputParameterToLocal(inputParameterIndex,localVariables[functionContext.indexOfVariableToReturn]);
-						inputParameterIndex++;
+						allocateLocalVariable(localVariables,functionContext,
+							LocalVariable(
+								function.returnType,
+								true,
+								getNewName(functionContext)
+								));
+					}
+					else
+					{
+						allocateLocalVariable(localVariables,functionContext,
+							LocalVariable(
+								function.returnType,
+								isTypePassedByReference(function.returnType),
+								getNewName(functionContext)
+								));
+						
+						if(isTypePassedByReference(function.returnType))
+						{
+							functionCode+=movInputParameterToLocal(inputParameterIndex,localVariables[functionContext.indexOfVariableToReturn]);
+							inputParameterIndex++;
+						}
 					}
 				}
 				
@@ -1588,6 +1982,8 @@ class CodeTop
 				}
 			}
 			
+			functionCode+=movImmediateToLocal(localVariables[functionContext.indexOfVariableToThrow],0);
+			
 			functionContext.functionLocalIndexStart=localVariables.size();
 			
 			functionContext.enterScope(localVariables.size());
@@ -1599,15 +1995,16 @@ class CodeTop
 			
 			if(function.returnsSomething)
 			{
-				if(!isTypePassedByReference(function.returnType))
+				if(!isTypePassedByReference(function.returnType) || function.returnsReference)
 				{
 					size_t size=0;
 					size_t alignment=1;
-					getTypeSizeAndAlignment(function.returnType,size,alignment,false);
+					getTypeSizeAndAlignment(function.returnType,size,alignment,function.returnsReference);
 					
 					functionCode+=movLocalToRegister(localVariables[functionContext.indexOfVariableToReturn],0,size,returnRegister);
 				}
 			}
+			functionCode+="clc\n";
 			functionCode+="leave\n";
 			functionCode+="ret\n";
 			
@@ -1631,7 +2028,7 @@ class CodeTop
 			{
 				ExpressionValue value;
 				functionCode+=compileCallFunction(function,code,functionContext,localVariables,
-					classIndex,findMethodIndex(classIndex,"__dc"),vector<int>{localVariables.getIndexOf("this")},value,false,Type());
+					classIndex,findMethodIndex(classIndex,"__dc"),vector<int>{localVariables.getIndexOf("this")},value,false,Type(),false);
 			}
 			
 			if(function.compilerGenerated)
@@ -1657,7 +2054,15 @@ class CodeTop
 				functionCode+=compileScope(function,code,function.codeStart,functionContext,localVariables);
 			}
 			
-			//TODO----
+			functionCode+="jmp .return\n";
+			{
+				functionCode+=".return_throw:\n";
+				
+				functionCode+=movLocalToRegister(localVariables[functionContext.indexOfVariableToThrow],returnRegister);
+				functionCode+="stc\n";
+				functionCode+="leave\n";
+				functionCode+="ret\n";
+			}
 			
 			functionCode+=".return:\n";
 			
@@ -1665,7 +2070,7 @@ class CodeTop
 			{
 				ExpressionValue value;
 				functionCode+=compileCallFunction(function,code,functionContext,localVariables,
-					classIndex,findMethodIndex(classIndex,"__dd"),vector<int>{localVariables.getIndexOf("this")},value,false,Type());
+					classIndex,findMethodIndex(classIndex,"__dd"),vector<int>{localVariables.getIndexOf("this")},value,false,Type(),false);
 			}
 			
 			compileFunctionEnd(classIndex,functionIndex,function,code,functionStartCode,functionCode,functionContext);
@@ -1752,41 +2157,102 @@ class CodeTop
 			{
 				if(isTypeWithConstructorAndDestructor(localVariables[localVariableIndex].type))
 				{
-					int classIndex=findClassIndex(localVariables[localVariableIndex].type.name);
-					if(classIndex==-1)
+					if(localVariables[localVariableIndex].type.name=="dynamic")
 					{
-						code.addError(-1,__LINE__);
-						throw LogicError();
+						if(methodName=="constructor")
+						{
+							return movImmediateToLocal(localVariables[localVariableIndex],0);
+						}
+						else
+						{
+							ExpressionValue value;
+							return compileCallFunction(function,code,functionContext,localVariables,-1,findFunctionIndex("__dynamic_destructor"),
+								vector<int>{localVariableIndex},value,false,Type(),false);
+						}
 					}
-					int functionIndex=findMethodIndex(classIndex,methodName);
-					if(functionIndex==-1)
+					else
 					{
-						code.addError(-1,__LINE__);
-						throw LogicError();
+						int classIndex=findClassIndex(localVariables[localVariableIndex].type.name);
+						if(classIndex==-1)
+						{
+							code.addError(-1,__LINE__);
+							throw LogicError();
+						}
+						int functionIndex=-1;
+						if(methodName=="constructor")
+						{
+							functionIndex=findEmptyConstructorIndex(classIndex);
+						}
+						else
+						{
+							functionIndex=findMethodIndex(classIndex,methodName);
+						}
+						if(functionIndex==-1)
+						{
+							code.addError(-1,__LINE__);
+							throw LogicError();
+						}
+						ExpressionValue value;
+						return compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,vector<int>{localVariableIndex},value,false,Type(),false);
 					}
-					ExpressionValue value;
-					return compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,vector<int>{localVariableIndex},value,false,Type());
 				}
 			}
 			return string();
 		}
-		string compileCallAssignmentOperatorOfLocal(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,
+		string compileCallAssignmentOperatorOfDynamicLocal(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,
 			NamedVector<LocalVariable>& localVariables,int localVariableIndex,int localVariableIndex2)
 		{
-			int classIndex=findClassIndex(localVariables[localVariableIndex].type.name);
-			if(classIndex==-1)
-			{
-				code.addError(-1,__LINE__);
-				throw LogicError();
-			}
-			int functionIndex=findMethodIndex(classIndex,"=");
-			if(functionIndex==-1)
-			{
-				code.addError(-1,__LINE__);
-				throw LogicError();
-			}
+			string output;
+			
+			int localVariableIndex3=createTmp(localVariables,functionContext,Type("i64",0),false);
+			
+			output+=movImmediateToLocal(localVariables[localVariableIndex3],dataTypes.getIndexOf(localVariables[localVariableIndex2].type.name));
+			
 			ExpressionValue value;
-			return compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,vector<int>{localVariableIndex,localVariableIndex2},value,false,Type());
+			output+=compileCallFunction(function,code,functionContext,localVariables,-1,findFunctionIndex("__dynamic_assign"),
+				vector<int>{localVariableIndex,localVariableIndex2,localVariableIndex3},value,false,Type(),false);
+			
+			return output;
+		}
+		string compileCallAssignmentOperatorOfLocal(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,
+			NamedVector<LocalVariable>& localVariables,int localVariableIndex,int localVariableIndex2)
+		{
+			if(localVariables[localVariableIndex].type.name=="dynamic" && localVariables[localVariableIndex].type.pointerLevels==0)
+			{
+				return compileCallAssignmentOperatorOfDynamicLocal(function,code,functionContext,localVariables,localVariableIndex,localVariableIndex2);
+			}
+			else
+			{
+				string output;
+				
+				if(localVariables[localVariableIndex2].type.name=="dynamic" && localVariables[localVariableIndex2].type.pointerLevels==0)
+				{
+					ExpressionValue rvalue;
+					rvalue.localVariableIndex=localVariableIndex2;
+					
+					ExpressionValue castValue;
+					output+=compileCastFromDynamic(function,code,t,functionContext,localVariables,rvalue,castValue,localVariables[localVariableIndex].type);
+					
+					localVariableIndex2=castValue.localVariableIndex;
+				}
+				
+				int classIndex=findClassIndex(localVariables[localVariableIndex].type.name);
+				if(classIndex==-1)
+				{
+					code.addError(t,__LINE__);
+					throw LogicError();
+				}
+				int functionIndex=findMethodIndex(classIndex,"=");
+				if(functionIndex==-1)
+				{
+					code.addError(t,__LINE__);
+					throw LogicError();
+				}
+				ExpressionValue value;
+				output+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,vector<int>{localVariableIndex,localVariableIndex2},value,false,Type(),false);
+				
+				return output;
+			}
 		}
 		string compileCallConstructorsOfAttributesOfThis(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,
 			NamedVector<LocalVariable>& localVariables)
@@ -1861,20 +2327,27 @@ class CodeTop
 			
 			if(isTypeWithAssignmentOperator(attribute.type))
 			{
-				int classIndex=findClassIndex(v.type.name);
-				if(classIndex==-1)
+				if(attribute.type.name=="dynamic")
 				{
-					code.addError(-1,__LINE__);
-					throw LogicError();
+					output+=compileCallAssignmentOperatorOfDynamicLocal(function,code,functionContext,localVariables,localVariableIndex,localVariableIndex2);
 				}
-				int functionIndex=findMethodIndex(classIndex,"=");
-				if(functionIndex==-1)
+				else
 				{
-					code.addError(-1,__LINE__);
-					throw LogicError();
+					int classIndex=findClassIndex(v.type.name);
+					if(classIndex==-1)
+					{
+						code.addError(-1,__LINE__);
+						throw LogicError();
+					}
+					int functionIndex=findMethodIndex(classIndex,"=");
+					if(functionIndex==-1)
+					{
+						code.addError(-1,__LINE__);
+						throw LogicError();
+					}
+					ExpressionValue value;
+					output+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,vector<int>{localVariableIndex,localVariableIndex2},value,false,Type(),false);
 				}
-				ExpressionValue value;
-				output+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,vector<int>{localVariableIndex,localVariableIndex2},value,false,Type());
 			}
 			else
 			{
@@ -1908,81 +2381,233 @@ class CodeTop
 				output+=string("add ")+registerToUse+","+to_string(attribute.objectOffset)+"\n";
 				output+=movRegisterToLocal(v,registerToUse);
 				
-				int classIndex=findClassIndex(v.type.name);
-				if(classIndex==-1)
+				if(v.type.name=="dynamic")
 				{
-					code.addError(-1,__LINE__);
-					throw LogicError();
+					if(methodName=="constructor")
+					{
+						output+=movImmediateToLocal(localVariables[localVariableIndex],0);
+					}
+					else
+					{
+						ExpressionValue value;
+						output+=compileCallFunction(function,code,functionContext,localVariables,-1,findFunctionIndex("__dynamic_destructor"),
+							vector<int>{localVariableIndex},value,false,Type(),false);
+					}
 				}
-				int functionIndex=findMethodIndex(classIndex,methodName);
-				if(functionIndex==-1)
+				else
 				{
-					code.addError(-1,__LINE__);
-					throw LogicError();
+					int classIndex=findClassIndex(v.type.name);
+					if(classIndex==-1)
+					{
+						code.addError(-1,__LINE__);
+						throw LogicError();
+					}
+					int functionIndex=-1;
+					if(methodName=="constructor")
+					{
+						functionIndex=findEmptyConstructorIndex(classIndex);
+					}
+					else
+					{
+						functionIndex=findMethodIndex(classIndex,methodName);
+					}
+					if(functionIndex==-1)
+					{
+						code.addError(-1,__LINE__);
+						throw LogicError();
+					}
+					ExpressionValue value;
+					output+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,vector<int>{localVariableIndex},value,false,Type(),false);
 				}
-				ExpressionValue value;
-				output+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,vector<int>{localVariableIndex},value,false,Type());
 			}
 			
 			return output;
 		}
-		string compileCallFunction(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			int classIndex,int functionIndex,const vector<int>& argumentIndexes,ExpressionValue& value,bool getReturnValue,const Type& returnValueType)
+		string compileCallFunctionIndirect(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
+			ExpressionValue& functionAddressValue,const vector<int>& argumentIndexes,ExpressionValue& value,ExpressionValue& returnTypeIndexValue,bool isDestructor)
 		{
 			string output;
 			
+			value=ExpressionValue();
+			value.localVariableIndex=createTmp(localVariables,functionContext,Type("dynamic",0),false);
+			output+=movImmediateToLocal(localVariables[value.localVariableIndex],0);
+			
+			int skipReturnLabel=createLabel(functionContext);
+			int endLabel=createLabel(functionContext);
+			
 			{
-				int parameterStackSize=0;
+				string registerToUse="rax";
 				
-				for(int parameterIndex=0;parameterIndex<argumentIndexes.size();parameterIndex++)
+				output+=movLocalToRegisterGetValue(localVariables[returnTypeIndexValue.localVariableIndex],registerToUse);
+				
+				output+=string("cmp ")+registerToUse+","+to_string(dataTypesPassByReferenceStartIndex)+"\n";
+				output+=string("jl ")+getAssemblyLabelName(skipReturnLabel)+"\n";
+			}
+			
+			{
+				vector<int> argumentIndexes2=argumentIndexes;
+				argumentIndexes2.insert(argumentIndexes2.begin(),value.localVariableIndex);
+				
+				output+=compileCallFunctionPutParameters(function,code,functionContext,localVariables,argumentIndexes2);
+				
 				{
 					string registerToUse="rax";
-					if(parameterIndex<parameterRegisters.size())
+					output+=movLocalToRegisterGetValue(localVariables[functionAddressValue.localVariableIndex],registerToUse);
+					output+=string("call ")+registerToUse+"\n";
+				}
+				
+				if(!isDestructor) output+=compileCheckException(function,code,functionContext,localVariables);
+			}
+			
+			output+=string("jmp ")+getAssemblyLabelName(endLabel)+"\n";
+			output+=getAssemblyLabelName(skipReturnLabel)+":\n";
+			
+			{
+				output+=compileCallFunctionPutParameters(function,code,functionContext,localVariables,argumentIndexes);
+				
+				{
+					string registerToUse="rax";
+					output+=movLocalToRegisterGetValue(localVariables[functionAddressValue.localVariableIndex],registerToUse);
+					output+=string("call ")+registerToUse+"\n";
+				}
+				
+				if(!isDestructor) output+=compileCheckException(function,code,functionContext,localVariables);
+				
+				{
+					ExpressionValue tmpValue;
+					tmpValue.localVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+					
+					output+=movRegisterToLocal(localVariables[tmpValue.localVariableIndex],returnRegister);
+					
+					int skipReturnValueLabel=createLabel(functionContext);
 					{
-						registerToUse=parameterRegisters[parameterIndex];
-					}
-					
-					LocalVariable v=localVariables[argumentIndexes[parameterIndex]];
-					
-					bool isPassedByReference=isTypePassedByReference(v.type);
-					
-					int size=pointerSize;
-					
-					if(isPassedByReference)
-					{
-						size=pointerSize;
+						string registerToUse="rax";
 						
-						if(v.isReference)
+						output+=movLocalToRegisterGetValue(localVariables[returnTypeIndexValue.localVariableIndex],registerToUse);
+						
+						output+=string("cmp ")+registerToUse+",-1\n";
+						output+=string("je ")+getAssemblyLabelName(skipReturnValueLabel)+"\n";
+					}
+					{
+						int functionIndex=findFunctionIndex("__dynamic_assign");
+						if(functionIndex==-1)
 						{
-							output+=movLocalToRegister(v,registerToUse);
+							code.addError(-1,__LINE__);
+							throw LogicError();
 						}
-						else
-						{
-							output+=movLocalAddressToRegister(v,0,registerToUse);
-						}
+						
+						ExpressionValue tmp;
+						output+=compileCallFunction(function,code,functionContext,localVariables,
+							-1,functionIndex,vector<int>{value.localVariableIndex,tmpValue.localVariableIndex,returnTypeIndexValue.localVariableIndex},tmp,false,Type(),false);
+					}
+					output+=getAssemblyLabelName(skipReturnValueLabel)+":\n";
+				}
+			}
+			
+			output+=getAssemblyLabelName(endLabel)+":\n";
+			
+			return output;
+		}
+		string compileCallFunctionPutParameters(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
+			const vector<int>& argumentIndexes)
+		{
+			string output;
+			
+			int parameterStackSize=0;
+			
+			for(int parameterIndex=0;parameterIndex<argumentIndexes.size();parameterIndex++)
+			{
+				string registerToUse="rax";
+				if(parameterIndex<parameterRegisters.size())
+				{
+					registerToUse=parameterRegisters[parameterIndex];
+				}
+				
+				LocalVariable v=localVariables[argumentIndexes[parameterIndex]];
+				
+				bool isPassedByReference=isTypePassedByReference(v.type);
+				
+				int size=pointerSize;
+				
+				if(isPassedByReference)
+				{
+					size=pointerSize;
+					
+					if(v.isReference)
+					{
+						output+=movLocalToRegister(v,registerToUse);
 					}
 					else
 					{
-						size=getTypeSize(v.type,false);
-						
-						output+=movLocalToRegisterGetValue(v,registerToUse);
+						output+=movLocalAddressToRegister(v,0,registerToUse);
 					}
+				}
+				else
+				{
+					size=getTypeSize(v.type,false);
 					
-					if(parameterIndex>=parameterRegisters.size())
-					{
-						int stackOffset=(parameterIndex-parameterRegisters.size())*8;
-						
-						output+=string("mov ")+"[rsp+"+to_string(stackOffset)+"],"+getSizedRegister(registerToUse,size)+"\n";
-						
-						parameterStackSize+=8;
-					}
+					output+=movLocalToRegisterGetValue(v,registerToUse);
 				}
 				
-				if(parameterStackSize>functionContext.parameterStack)
+				if(parameterIndex>=parameterRegisters.size())
 				{
-					functionContext.parameterStack=parameterStackSize;
+					int stackOffset=(parameterIndex-parameterRegisters.size())*8;
+					
+					output+=string("mov ")+"[rsp+"+to_string(stackOffset)+"],"+getSizedRegister(registerToUse,size)+"\n";
+					
+					parameterStackSize+=8;
 				}
 			}
+			
+			if(parameterStackSize>functionContext.parameterStack)
+			{
+				functionContext.parameterStack=parameterStackSize;
+			}
+			
+			return output;
+		}
+		string compileCheckException(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables)
+		{
+			string output;
+			
+			int skipThrowLabel=createLabel(functionContext);
+			output+=string("jnc ")+getAssemblyLabelName(skipThrowLabel)+"\n";
+			output+=movRegisterToLocal(localVariables[functionContext.indexOfVariableToThrow],returnRegister);
+			
+			if(functionContext.tryContext.inTry)
+			{
+				output+=compileCallDestructorsUntilLocalIndex(function,code,functionContext,localVariables,functionContext.tryContext.localIndexStart);
+				output+=string("jmp ")+getAssemblyLabelName(functionContext.tryContext.catchLabel)+"\n";
+			}
+			else
+			{
+				output+=compileCallDestructorsUntilLocalIndex(function,code,functionContext,localVariables,functionContext.functionLocalIndexStart);
+				output+="jmp .return_throw\n";
+			}
+			
+			output+=getAssemblyLabelName(skipThrowLabel)+":\n";
+			
+			return output;
+		}
+		string compileCallFunction(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
+			int classIndex,int functionIndex,const vector<int>& argumentIndexes,ExpressionValue& value,bool getReturnValue,const Type& returnValueType,bool returnsReference)
+		{
+			string output;
+			
+			bool isDestructor=false;
+			if(classIndex!=-1)
+			{
+				if(classes[classIndex].methods[functionIndex].name=="destructor")
+				{
+					isDestructor=true;
+				}
+			}
+			else if(functions[functionIndex].name=="__dynamic_destructor")
+			{
+				isDestructor=true;
+			}
+			
+			output+=compileCallFunctionPutParameters(function,code,functionContext,localVariables,argumentIndexes);
 			
 			if(classIndex==-1)
 			{
@@ -1993,15 +2618,15 @@ class CodeTop
 				output+=string("call ")+getAssemblyMethodName(classIndex,functionIndex)+"\n";
 			}
 			
-			//TODO---- check for exception
+			if(!isDestructor) output+=compileCheckException(function,code,functionContext,localVariables);
 			
 			if(getReturnValue)
 			{
 				value=ExpressionValue();
 				
-				value.localVariableIndex=createTmp(localVariables,functionContext,returnValueType,false);
+				value.localVariableIndex=createTmp(localVariables,functionContext,returnValueType,returnsReference);
 				
-				if(isTypePassedByReference(returnValueType))
+				if(isTypePassedByReference(returnValueType) && !returnsReference)
 				{
 					code.addError(-1,__LINE__);
 					throw LogicError();
@@ -2243,12 +2868,28 @@ class CodeTop
 					ExpressionValue returnValue;
 					returnValue.localVariableIndex=functionContext.indexOfVariableToReturn;
 					
-					bool success=false;
-					statementCode+=compileAssignment(function,code,t,functionContext,localVariables,returnValue,value,success);
-					if(!success)
+					if(function.returnsReference)
 					{
-						code.addError(t,__LINE__);
-						throw LogicError();
+						LocalVariable v=localVariables[value.localVariableIndex];
+						if(!v.isReference || v.type.name!=function.returnType.name || v.type.pointerLevels!=function.returnType.pointerLevels)
+						{
+							code.addError(t,__LINE__);
+							throw LogicError();
+						}
+						
+						string registerToUse="rax";
+						statementCode+=movLocalToRegister(v,registerToUse);
+						statementCode+=movRegisterToLocal(localVariables[returnValue.localVariableIndex],registerToUse);
+					}
+					else
+					{
+						bool success=false;
+						statementCode+=compileAssignment(function,code,t,functionContext,localVariables,returnValue,value,success);
+						if(!success)
+						{
+							code.addError(t,__LINE__);
+							throw LogicError();
+						}
 					}
 				}
 				
@@ -2261,6 +2902,117 @@ class CodeTop
 					throw ParseError();
 				}
 				t++;
+			}
+			else if(start=="throw")
+			{
+				t++;
+				
+				{
+					ExpressionValue value;
+					
+					statementCode+=compileExpressionPart(function,code,t,functionContext,localVariables,value);
+					
+					ExpressionValue throwValue;
+					throwValue.localVariableIndex=functionContext.indexOfVariableToThrow;
+					
+					bool success=false;
+					statementCode+=compileAssignment(function,code,t,functionContext,localVariables,throwValue,value,success);
+					if(!success)
+					{
+						code.addError(t,__LINE__);
+						throw LogicError();
+					}
+				}
+				
+				if(functionContext.tryContext.inTry)
+				{
+					statementCode+=compileCallDestructorsUntilLocalIndex(function,code,functionContext,localVariables,functionContext.tryContext.localIndexStart);
+					statementCode+=string("jmp ")+getAssemblyLabelName(functionContext.tryContext.catchLabel)+"\n";
+				}
+				else
+				{
+					statementCode+=compileCallDestructorsUntilLocalIndex(function,code,functionContext,localVariables,functionContext.functionLocalIndexStart);
+					statementCode+="jmp .return_throw\n";
+				}
+				
+				if(code.get(t)!=";")
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				t++;
+			}
+			else if(start=="try")
+			{
+				t++;
+				
+				int catchLabel=createLabel(functionContext);
+				TryContext oldTryContext=functionContext.startTry(TryContext(localVariables.size(),catchLabel));
+				
+				int skipCatchLabel=createLabel(functionContext);
+				
+				statementCode+=compileScope(function,code,t,functionContext,localVariables);
+				
+				statementCode+=string("jmp ")+getAssemblyLabelName(skipCatchLabel)+"\n";
+				
+				functionContext.endTry(oldTryContext);
+				
+				if(code.get(t)!="catch")
+				{
+					code.addError(t,__LINE__);
+					throw LogicError();
+				}
+				t++;
+				
+				if(code.get(t)!="(")
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				t++;
+				
+				if(code.get(t)!="dynamic")
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				t++;
+				
+				string variableName=code.get(t);
+				t++;
+				
+				if(code.get(t)!=")")
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				t++;
+				
+				statementCode+=getAssemblyLabelName(catchLabel)+":\n";
+				
+				NamedVector<LocalVariable> outLocalVariables=localVariables;
+				int previousScopeLocalIndexStart=functionContext.enterScope(localVariables.size());
+				{
+					allocateLocalVariable(localVariables,functionContext,
+						LocalVariable(
+							Type("dynamic",0),
+							true,
+							variableName
+							));
+					
+					int localVariableIndex=int(localVariables.size())-1;
+					
+					string registerToUse="rax";
+					statementCode+=movLocalAddressToRegister(localVariables[functionContext.indexOfVariableToThrow],0,registerToUse);
+					statementCode+=movRegisterToLocal(localVariables[localVariableIndex],registerToUse);
+					
+					statementCode+=compileScope(function,code,t,functionContext,localVariables);
+				}
+				statementCode+=compileExitScope(function,code,functionContext,localVariables);
+				functionContext.exitScope(previousScopeLocalIndexStart);
+				localVariables=outLocalVariables;
+				
+				statementCode+=getAssemblyLabelName(skipCatchLabel)+":\n";
 			}
 			else if(start=="if")
 			{
@@ -2788,25 +3540,32 @@ class CodeTop
 			
 			return offset;
 		}
-		bool isAssignable(NamedVector<LocalVariable>& localVariables,const ExpressionValue& lvalueExpression,const ExpressionValue& rvalueExpression)
+		bool isAssignable(NamedVector<LocalVariable>& localVariables,const Type& lvalueType,const ExpressionValue& rvalueExpression)
 		{
-			LocalVariable lvalue=localVariables[lvalueExpression.localVariableIndex];
 			LocalVariable rvalue=localVariables[rvalueExpression.localVariableIndex];
 			
-			if(rvalueExpression.isNullptr)
+			if(lvalueType.name=="dynamic" && lvalueType.pointerLevels==0 && rvalue.type.pointerLevels==0)
 			{
-				if(lvalue.type.pointerLevels>0) return true;
+				return true;
+			}
+			else if(rvalue.type.name=="dynamic" && rvalue.type.pointerLevels==0 && lvalueType.pointerLevels==0)
+			{
+				return true;
+			}
+			else if(rvalueExpression.isNullptr)
+			{
+				if(lvalueType.pointerLevels>0) return true;
 				else return false;
 			}
 			if(rvalueExpression.isIntegerLiteral)
 			{
-				if(lvalue.type.pointerLevels>0) return false;
-				return dataTypes[lvalue.type.name].isInteger;
+				if(lvalueType.pointerLevels>0) return false;
+				return dataTypes[lvalueType.name].isInteger;
 			}
 			else
 			{
-				if(lvalue.type.pointerLevels!=rvalue.type.pointerLevels) return false;
-				if(lvalue.type.name!=rvalue.type.name) return false;
+				if(lvalueType.pointerLevels!=rvalue.type.pointerLevels) return false;
+				if(lvalueType.name!=rvalue.type.name) return false;
 			}
 			
 			return true;
@@ -3063,7 +3822,6 @@ class CodeTop
 			string output;
 			
 			int size=getSizeOfTypeFromName(type,false);
-			bool isSigned=isSignedPrimitiveTypeName(type);
 			
 			if(op=="-")
 			{
@@ -3254,9 +4012,50 @@ class CodeTop
 			else
 			{
 				//Any other combination of types (overloaded operator)
-				//TODO----
-				code.addError(t,__LINE__);//----
-				throw LogicError();//----
+				if(vlvalue.type.name=="dynamic" || vrvalue.type.name=="dynamic")
+				{
+					//TODO----
+					code.addError(t,__LINE__);//----
+					throw LogicError();//----
+				}
+				else
+				{
+					vector<ExpressionValue> arguments=vector<ExpressionValue>{lvalue,rvalue};
+					
+					int functionIndex=findFunctionIndexWithArgumentsReturnMinus2IfCollision(-1,op,localVariables,arguments);
+					if(functionIndex==-1)
+					{
+						code.addError(t,__LINE__);
+						throw LogicError();
+					}
+					
+					CodeTopFunction& functionToCall=functions[functionIndex];
+					
+					bool includeReturnReference= functionToCall.returnsSomething && isTypePassedByReference(functionToCall.returnType) && !functionToCall.returnsReference;
+					
+					ExpressionValue returnReference;
+					if(includeReturnReference)
+					{
+						expressionCode+=createObjectAndGetReference(function,code,functionContext,localVariables,returnReference,functionToCall.returnType);
+					}
+					
+					vector<int> args;
+					if(includeReturnReference) args.push_back(returnReference.localVariableIndex);
+					
+					args.push_back(arguments[0].localVariableIndex);
+					args.push_back(arguments[1].localVariableIndex);
+					
+					ExpressionValue returnValue;
+					expressionCode+=compileCallFunction(function,code,functionContext,localVariables,-1,functionIndex,
+						args,returnValue,functionToCall.returnsSomething && !includeReturnReference,functionToCall.returnType,functionToCall.returnsReference);
+					
+					if(includeReturnReference)
+					{
+						returnValue=returnReference;
+					}
+					
+					value=returnValue;
+				}
 			}
 			
 			return expressionCode;
@@ -3351,50 +4150,91 @@ class CodeTop
 			success=true;
 			return output;
 		}
+		string compileCastFromDynamic(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
+			ExpressionValue& inputValue,ExpressionValue& outputValue,const Type& type)
+		{
+			string output;
+			
+			outputValue=ExpressionValue();
+			outputValue.localVariableIndex=createTmp(localVariables,functionContext,type,true);
+			
+			Type typePointer=type;
+			typePointer.pointerLevels++;
+			int localVariableIndex2=createTmp(localVariables,functionContext,typePointer,false);
+			
+			string registerToUse="rax";
+			output+=movLocalAddressToRegister(localVariables[outputValue.localVariableIndex],0,registerToUse);
+			output+=movRegisterToLocal(localVariables[localVariableIndex2],registerToUse);
+			
+			
+			int localVariableIndex3=createTmp(localVariables,functionContext,Type("i64",0),false);
+			output+=movImmediateToLocal(localVariables[localVariableIndex3],dataTypes.getIndexOf(type.name));
+			
+			ExpressionValue value;
+			output+=compileCallFunction(function,code,functionContext,localVariables,
+				-1,findFunctionIndex("__dynamic_cast_to_type"),vector<int>{inputValue.localVariableIndex,localVariableIndex2,localVariableIndex3},value,false,Type(),false);
+			
+			return output;
+		}
 		string compileAssignment(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
 			ExpressionValue& lvalue,ExpressionValue& rvalue,bool& success)
 		{
 			string output;
 			
-			if(isAssignable(localVariables,lvalue,rvalue))
+			success=true;
+			
+			if(localVariables[lvalue.localVariableIndex].type.name=="dynamic" && localVariables[lvalue.localVariableIndex].type.pointerLevels==0)
 			{
-				LocalVariable lv=localVariables[lvalue.localVariableIndex];
-				LocalVariable rv=localVariables[rvalue.localVariableIndex];
-				
-				int lsize=getTypeSize(lv.type,false);
-				int rsize=getTypeSize(rv.type,false);
-				
-				if(lv.type.pointerLevels>0 || dataTypes[lv.type.name].isInteger)
+				output+=compileCallAssignmentOperatorOfLocal(function,code,t,functionContext,
+					localVariables,lvalue.localVariableIndex,rvalue.localVariableIndex);
+			}
+			else
+			{
+				if(isAssignable(localVariables,localVariables[lvalue.localVariableIndex].type,rvalue))
 				{
-					if(lv.isReference)
+					LocalVariable lv=localVariables[lvalue.localVariableIndex];
+					LocalVariable rv=localVariables[rvalue.localVariableIndex];
+					
+					int lsize=getTypeSize(lv.type,false);
+					
+					if(lv.type.pointerLevels>0 || dataTypes[lv.type.name].isInteger)
 					{
-						string registerToUseL="rcx";
-						string registerToUseR="rax";
+						if(rv.type.pointerLevels==0 && rv.type.name=="dynamic")
+						{
+							ExpressionValue castValue;
+							output+=compileCastFromDynamic(function,code,t,functionContext,localVariables,rvalue,castValue,lv.type);
+							
+							rv=localVariables[castValue.localVariableIndex];
+						}
 						
-						output+=movLocalToRegister(lv,registerToUseL);
-						output+=movLocalToRegisterGetValue(rv,registerToUseR);
-						
-						output+=string("mov [")+registerToUseL+"],"+getSizedRegister(registerToUseR,lsize)+"\n";
+						if(lv.isReference)
+						{
+							string registerToUseL="rcx";
+							string registerToUseR="rax";
+							
+							output+=movLocalToRegister(lv,registerToUseL);
+							output+=movLocalToRegisterGetValue(rv,registerToUseR);
+							
+							output+=string("mov [")+registerToUseL+"],"+getSizedRegister(registerToUseR,lsize)+"\n";
+						}
+						else
+						{
+							string registerToUse="rax";
+							
+							output+=movLocalToRegisterGetValue(rv,registerToUse);
+							output+=movRegisterToLocal(lv,registerToUse);
+						}
 					}
 					else
 					{
-						string registerToUse="rax";
-						
-						output+=movLocalToRegisterGetValue(rv,registerToUse);
-						output+=movRegisterToLocal(lv,registerToUse);
+						output+=compileCallAssignmentOperatorOfLocal(function,code,t,functionContext,
+							localVariables,lvalue.localVariableIndex,rvalue.localVariableIndex);
 					}
 				}
 				else
 				{
-					output+=compileCallAssignmentOperatorOfLocal(function,code,functionContext,
-						localVariables,lvalue.localVariableIndex,rvalue.localVariableIndex);
+					success=false;
 				}
-				
-				success=true;
-			}
-			else
-			{
-				success=false;
 			}
 			
 			return output;
@@ -3441,8 +4281,9 @@ class CodeTop
 			}
 			else
 			{
-				code.addError(t,__LINE__);
-				throw LogicError();
+				//TODO----
+				code.addError(t,__LINE__);//----
+				throw LogicError();//----
 			}
 			
 			return output;
@@ -3468,33 +4309,130 @@ class CodeTop
 			
 			return output;
 		}
-		string compileFunctionCall(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& value,int classIndex,int functionIndex,const ExpressionValue& thisValue)
+		string compileNonEmptyConstructorCallOfLocal(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
+			int localVariableIndex)
+		{
+			ExpressionValue thisValue;
+			thisValue.localVariableIndex=localVariableIndex;
+			
+			int classIndex=findClassIndex(localVariables[localVariableIndex].type.name);
+			
+			ExpressionValue value;
+			return compileFunctionCall(function,code,t,functionContext,localVariables,value,classIndex,-1,thisValue,true);
+		}
+		bool argumentsApplyToFunction(CodeTopFunction& function,NamedVector<LocalVariable>& localVariables,const vector<ExpressionValue>& arguments)
+		{
+			if(function.parameters.size()!=arguments.size()) return false;
+			for(int i=0;i<arguments.size();i++)
+			{
+				if(!isAssignable(localVariables,function.parameters[i].type,arguments[i]))
+				{
+					return false;
+				}
+			}
+			return true;
+		}
+		int findFunctionIndexWithArgumentsReturnMinus2IfCollision(int classIndex,string functionName,NamedVector<LocalVariable>& localVariables,const vector<ExpressionValue>& argRvalues)
+		{
+			int functionIndex=-1;
+			if(classIndex==-1)
+			{
+				for(int i=0;i<functions.size();i++)
+				{
+					if(functions[i].name==functionName)
+					{
+						if(argumentsApplyToFunction(functions[i],localVariables,argRvalues))
+						{
+							if(functionIndex==-1)
+							{
+								functionIndex=i;
+								break;
+							}
+							else
+							{
+								return -2;
+							}
+						}
+					}
+				}
+			}
+			else
+			{
+				for(int i=0;i<classes[classIndex].methods.size();i++)
+				{
+					if(classes[classIndex].methods[i].name==functionName)
+					{
+						if(argumentsApplyToFunction(classes[classIndex].methods[i],localVariables,argRvalues))
+						{
+							if(functionIndex==-1)
+							{
+								functionIndex=i;
+								break;
+							}
+							else
+							{
+								return -2;
+							}
+						}
+					}
+				}
+			}
+			return functionIndex;
+		}
+		string createObjectAndGetReference(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
+			ExpressionValue& outputReference,Type type)
 		{
 			string output;
 			
-			CodeTopFunction& functionToCall= classIndex==-1 ? functions[functionIndex] : classes[classIndex].methods[functionIndex];
+			ExpressionValue value;
+			value.localVariableIndex=createTmp(localVariables,functionContext,type,false);
 			
-			bool includeReturnReference= functionToCall.returnsSomething && isTypePassedByReference(functionToCall.returnType);
-			bool includeThisValue= classIndex!=-1;
+			output+=compileCallConstructorOfLocal(function,code,functionContext,localVariables,value.localVariableIndex);
+			
+			outputReference=ExpressionValue();
+			outputReference.localVariableIndex=createTmp(localVariables,functionContext,type,true);
+			
+			string registerToUse="rax";
+			
+			output+=movLocalAddressToRegister(localVariables[value.localVariableIndex],0,registerToUse);
+			
+			output+=movRegisterToLocal(localVariables[outputReference.localVariableIndex],registerToUse);
+			
+			return output;
+		}
+		string compileFunctionCall(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
+			ExpressionValue& value,int classIndex,int functionIndex,const ExpressionValue& thisValue,bool isNonEmptyConstructor=false)
+		{
+			string output;
+			
+			CodeTopFunction*functionToCall=nullptr;
+			bool includeReturnReference=false;
+			bool includeThisValue=false;
+			if(isNonEmptyConstructor)
+			{
+				functionToCall=nullptr;
+				includeReturnReference=false;
+				includeThisValue=true;
+			}
+			else
+			{
+				functionToCall= classIndex==-1 ? &functions[functionIndex] : &classes[classIndex].methods[functionIndex];
+				includeReturnReference= functionToCall->returnsSomething && isTypePassedByReference(functionToCall->returnType) && !functionToCall->returnsReference;
+				includeThisValue= classIndex!=-1;
+			}
 			
 			vector<ExpressionValue> arguments;
 			
 			if(includeReturnReference)
 			{
-				ExpressionValue returnValue;
-				returnValue.localVariableIndex=createTmp(localVariables,functionContext,functionToCall.returnType,false);
-				
-				output+=compileCallConstructorOfLocal(function,code,functionContext,localVariables,returnValue.localVariableIndex);
+				if(isNonEmptyConstructor)
+				{
+					code.addError(t,__LINE__);
+					throw LogicError();
+				}
 				
 				ExpressionValue returnReference;
-				returnReference.localVariableIndex=createTmp(localVariables,functionContext,functionToCall.returnType,true);
-				
-				string registerToUse="rax";
-				
-				output+=movLocalAddressToRegister(localVariables[returnValue.localVariableIndex],0,registerToUse);
-				
-				output+=movRegisterToLocal(localVariables[returnReference.localVariableIndex],registerToUse);
+				output+=createObjectAndGetReference(function,code,functionContext,localVariables,returnReference,functionToCall->returnType);
 				
 				arguments.push_back(returnReference);
 			}
@@ -3511,15 +4449,12 @@ class CodeTop
 			}
 			t++;
 			
+			vector<ExpressionValue> argRvalues;
+			
 			for(int i=0;;i++)
 			{
 				if(code.get(t)==")")
 				{
-					if(i!=functionToCall.parameters.size())
-					{
-						code.addError(t,__LINE__);
-						throw LogicError();
-					}
 					break;
 				}
 				
@@ -3527,20 +4462,7 @@ class CodeTop
 				
 				output+=compileExpressionPart(function,code,t,functionContext,localVariables,argRvalue);
 				
-				Type parameterType=functionToCall.parameters[i].type;
-				
-				ExpressionValue arg;
-				arg.localVariableIndex=createTmp(localVariables,functionContext,parameterType,isTypePassedByReference(parameterType));
-				
-				bool success=false;
-				output+=compileAssignment(function,code,t,functionContext,localVariables,arg,argRvalue,success);
-				if(!success)
-				{
-					code.addError(t,__LINE__);
-					throw LogicError();
-				}
-				
-				arguments.push_back(arg);
+				argRvalues.push_back(argRvalue);
 				
 				if(code.get(t)==",")
 				{
@@ -3560,14 +4482,95 @@ class CodeTop
 			}
 			t++;
 			
+			if(isNonEmptyConstructor)
+			{
+				functionIndex=findFunctionIndexWithArgumentsReturnMinus2IfCollision(classIndex,"constructor",localVariables,argRvalues);
+				
+				if(functionIndex==-1)
+				{
+					code.addError(t,__LINE__);
+					throw LogicError();
+				}
+				else if(functionIndex==-2)
+				{
+					code.addError(t,__LINE__);
+					throw LogicError();
+				}
+				
+				functionToCall=&classes[classIndex].methods[functionIndex];
+			}
+			
+			if(argRvalues.size()!=functionToCall->parameters.size())
+			{
+				code.addError(t,__LINE__);
+				throw LogicError();
+			}
+			
+			for(int i=0;i<argRvalues.size();i++)
+			{
+				ExpressionValue argRvalue=argRvalues[i];
+				
+				Type parameterType=functionToCall->parameters[i].type;
+				
+				bool passedByReference=isTypePassedByReference(parameterType);
+				
+				ExpressionValue arg;
+				arg.localVariableIndex=createTmp(localVariables,functionContext,parameterType,passedByReference);
+				
+				if(passedByReference)
+				{
+					LocalVariable argInput=localVariables[argRvalue.localVariableIndex];
+					Type argumentType=argInput.type;
+					if(argumentType.name!=parameterType.name && argumentType.pointerLevels!=parameterType.pointerLevels)
+					{
+						code.addError(t,__LINE__);
+						throw LogicError();
+					}
+					
+					LocalVariable argOutput=localVariables[arg.localVariableIndex];
+					string registerToUse="rax";
+					if(argInput.isReference)
+					{
+						output+=movLocalToRegister(argInput,registerToUse);
+						output+=movRegisterToLocal(argOutput,registerToUse);
+					}
+					else
+					{
+						output+=movLocalAddressToRegister(argInput,0,registerToUse);
+						output+=movRegisterToLocal(argOutput,registerToUse);
+					}
+				}
+				else
+				{
+					bool success=false;
+					output+=compileAssignment(function,code,t,functionContext,localVariables,arg,argRvalue,success);
+					if(!success)
+					{
+						code.addError(t,__LINE__);
+						throw LogicError();
+					}
+				}
+				
+				arguments.push_back(arg);
+			}
+			
 			vector<int> argumentIndexes;
 			for(int i=0;i<arguments.size();i++)
 			{
 				argumentIndexes.push_back(arguments[i].localVariableIndex);
 			}
 			
-			output+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,
-				argumentIndexes,value,functionToCall.returnsSomething && !isTypePassedByReference(functionToCall.returnType),functionToCall.returnType);
+			if(isNonEmptyConstructor)
+			{
+				output+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,
+					argumentIndexes,value,false,Type(),false);
+			}
+			else
+			{
+				output+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,
+					argumentIndexes,value,functionToCall->returnsSomething && !includeReturnReference,functionToCall->returnType,
+						functionToCall->returnsReference);
+			}
 			
 			if(includeReturnReference)
 			{
@@ -3684,7 +4687,7 @@ class CodeTop
 				}
 				t++;
 			}
-			else if(start=="sizeof" || start=="alignof")
+			else if(start=="sizeof" || start=="alignof" || start=="typeof")
 			{
 				t++;
 				
@@ -3702,42 +4705,156 @@ class CodeTop
 					isType=true;
 				}
 				
+				int typeLocalVariableIndex=-1;
+				
 				if(!isType)
 				{
 					ExpressionValue valueInside;
 					
 					expressionCode+=compileExpressionPart(function,code,t,functionContext,localVariables,valueInside);
 					
+					typeLocalVariableIndex=valueInside.localVariableIndex;
+					
 					LocalVariable v=localVariables[valueInside.localVariableIndex];
 					
 					type=v.type;
 				}
 				
-				int number=0;
-				if(start=="sizeof")
+				if(type.name=="dynamic" && type.pointerLevels==0 && !isType)
 				{
-					if(type.pointerLevels>0)
-					{
-						number=pointerSize;
-					}
+					string functionName;
+					if(start=="sizeof") functionName="__dynamic_sizeof";
+					else if(start=="alignof") functionName="__dynamic_alignof";
+					else if(start=="typeof") functionName="__dynamic_typeof";
 					else
 					{
-						number=getTypeSize(type,false);
+						code.addError(t,__LINE__);
+						throw LogicError();
 					}
+					
+					int functionIndex=findFunctionIndex(functionName);
+					if(functionIndex==-1)
+					{
+						code.addError(t,__LINE__);
+						throw LogicError();
+					}
+					
+					value=ExpressionValue();
+					value.localVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+					
+					int localVariableIndex=createTmp(localVariables,functionContext,Type("i64",1),false);
+					
+					string registerToUse="rax";
+					expressionCode+=movLocalAddressToRegister(localVariables[value.localVariableIndex],0,registerToUse);
+					expressionCode+=movRegisterToLocal(localVariables[localVariableIndex],registerToUse);
+					
+					ExpressionValue returnValue;
+					expressionCode+=compileCallFunction(function,code,functionContext,localVariables,-1,functionIndex,
+						vector<int>{typeLocalVariableIndex,localVariableIndex},returnValue,false,Type(),false);
 				}
-				else if(start=="alignof")
+				else
 				{
-					if(type.pointerLevels>0)
+					int number=0;
+					if(start=="sizeof")
 					{
-						number=pointerAlignment;
+						if(type.pointerLevels>0)
+						{
+							number=pointerSize;
+						}
+						else
+						{
+							number=getTypeSize(type,false);
+						}
 					}
-					else
+					else if(start=="alignof")
 					{
-						number=getTypeAlignment(type,false);
+						if(type.pointerLevels>0)
+						{
+							number=pointerAlignment;
+						}
+						else
+						{
+							number=getTypeAlignment(type,false);
+						}
+					}
+					else if(start=="typeof")
+					{
+						if(type.pointerLevels>0)
+						{
+							code.addError(t,__LINE__);
+							throw LogicError();
+						}
+						else
+						{
+							number=dataTypes.getIndexOf(type.name);
+						}
+					}
+					
+					expressionCode+=compileExpressionValueImmediate(functionContext,localVariables,value,Type("i64",0),number,false);
+				}
+				
+				if(code.get(t)!=")")
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				t++;
+			}
+			else if(start=="__call" || start=="__call_destructor")
+			{
+				t++;
+				
+				if(code.get(t)!="(")
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				t++;
+				
+				vector<ExpressionValue> argRvalues;
+				
+				for(int i=0;;i++)
+				{
+					if(code.get(t)==")")
+					{
+						break;
+					}
+					
+					ExpressionValue argRvalue;
+					
+					expressionCode+=compileExpressionPart(function,code,t,functionContext,localVariables,argRvalue);
+					
+					argRvalues.push_back(argRvalue);
+					
+					if(code.get(t)==",")
+					{
+						t++;
+					}
+					else if(code.get(t)!=")")
+					{
+						code.addError(t,__LINE__);
+						throw ParseError();
 					}
 				}
 				
-				expressionCode+=compileExpressionValueImmediate(functionContext,localVariables,value,Type("i64",0),number,false);
+				if(argRvalues.size()==0)
+				{
+					code.addError(t,__LINE__);
+					throw ParseError();
+				}
+				
+				ExpressionValue returnTypeIndexValue;
+				returnTypeIndexValue.localVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+				expressionCode+=movImmediateToLocal(localVariables[returnTypeIndexValue.localVariableIndex],-1);
+				
+				vector<int> argumentIndexes;
+				for(int i=1;i<argRvalues.size();i++)
+				{
+					argumentIndexes.push_back(argRvalues[i].localVariableIndex);
+				}
+				
+				expressionCode+=compileCallFunctionIndirect(function,code,functionContext,localVariables,
+					argRvalues[0],argumentIndexes,value,returnTypeIndexValue,start=="__call_destructor");
 				
 				if(code.get(t)!=")")
 				{
@@ -3759,73 +4876,132 @@ class CodeTop
 				{
 					if(code.get(t)!="(")
 					{
-						code.addError(t,__LINE__);
-						throw ParseError();
-					}
-					t++;
-					
-					if(castOrConstructorType.pointerLevels>0 || dataTypes[castOrConstructorType.name].isPrimitive)
-					{
-						ExpressionValue valueInside;
-						
-						expressionCode+=compileExpressionPart(function,code,t,functionContext,localVariables,valueInside);
-						
-						LocalVariable v=localVariables[valueInside.localVariableIndex];
-						
-						Type resultType=castOrConstructorType;
-						
-						if(v.type.pointerLevels==0 && !dataTypes[v.type.name].isPrimitive)
+						Type type=castOrConstructorType;
+						if(type.pointerLevels>0)
 						{
 							code.addError(t,__LINE__);
 							throw LogicError();
 						}
-						
-						value=ExpressionValue();
-						
-						value.localVariableIndex=createTmp(localVariables,functionContext,resultType,false);
-						
-						string registerToUse="rax";
-						
-						expressionCode+=movLocalToRegisterGetValue(v,registerToUse);
-						
-						if(valueInside.isIntegerLiteral)
+						else
 						{
-							bool success=false;
-							expressionCode+=castPrimitive(registerToUse,v.type,resultType,success);
-							if(!success)
-							{
-								code.addError(t,__LINE__);
-								throw LogicError();
-							}
+							int number=dataTypes.getIndexOf(type.name);
+							
+							expressionCode+=compileExpressionValueImmediate(functionContext,localVariables,value,Type("i64",0),number,false);
 						}
-						
-						expressionCode+=movRegisterToLocal(localVariables[value.localVariableIndex],registerToUse);
 					}
 					else
 					{
-						if(code.get(t)==")")
+						if(code.get(t)!="(")
 						{
-							Type type=castOrConstructorType;
+							code.addError(t,__LINE__);
+							throw ParseError();
+						}
+						t++;
+						
+						if(castOrConstructorType.pointerLevels>0 || dataTypes[castOrConstructorType.name].isPrimitive)
+						{
+							ExpressionValue valueInside;
 							
-							value=ExpressionValue();
+							expressionCode+=compileExpressionPart(function,code,t,functionContext,localVariables,valueInside);
 							
-							value.localVariableIndex=createTmp(localVariables,functionContext,type,false);
+							LocalVariable v=localVariables[valueInside.localVariableIndex];
 							
-							expressionCode+=compileCallConstructorOfLocal(function,code,functionContext,localVariables,value.localVariableIndex);
+							Type resultType=castOrConstructorType;
+							
+							if(v.type.name=="dynamic" && v.type.pointerLevels==0)
+							{
+								Type typeToCastTo=resultType;
+								if(typeToCastTo.pointerLevels>0)
+								{
+									typeToCastTo=Type("i64",0);
+								}
+								
+								int functionIndex=findFunctionIndex("__dynamic_cast_integer_to_integer");
+								if(functionIndex==-1)
+								{
+									code.addError(t,__LINE__);
+									throw LogicError();
+								}
+								
+								value=ExpressionValue();
+								value.localVariableIndex=createTmp(localVariables,functionContext,resultType,false);
+								
+								int localVariableIndex2=createTmp(localVariables,functionContext,Type("i64",1),false);
+								
+								string registerToUse="rax";
+								expressionCode+=movLocalAddressToRegister(localVariables[value.localVariableIndex],0,registerToUse);
+								expressionCode+=movRegisterToLocal(localVariables[localVariableIndex2],registerToUse);
+								
+								int localVariableIndex3=createTmp(localVariables,functionContext,Type("i64",0),false);
+								expressionCode+=movImmediateToLocal(localVariables[localVariableIndex3],dataTypes.getIndexOf(typeToCastTo.name));
+								
+								ExpressionValue returnValue;
+								expressionCode+=compileCallFunction(function,code,functionContext,localVariables,-1,functionIndex,
+									vector<int>{valueInside.localVariableIndex,localVariableIndex2,localVariableIndex3},returnValue,false,Type(),false);
+							}
+							else
+							{
+								if(v.type.pointerLevels==0 && !dataTypes[v.type.name].isPrimitive)
+								{
+									code.addError(t,__LINE__);
+									throw LogicError();
+								}
+								
+								value=ExpressionValue();
+								
+								value.localVariableIndex=createTmp(localVariables,functionContext,resultType,false);
+								
+								string registerToUse="rax";
+								
+								expressionCode+=movLocalToRegisterGetValue(v,registerToUse);
+								
+								if(valueInside.isIntegerLiteral)
+								{
+									bool success=false;
+									expressionCode+=castPrimitive(registerToUse,v.type,resultType,success);
+									if(!success)
+									{
+										code.addError(t,__LINE__);
+										throw LogicError();
+									}
+								}
+								
+								expressionCode+=movRegisterToLocal(localVariables[value.localVariableIndex],registerToUse);
+							}
 						}
 						else
 						{
-							code.addError(t,__LINE__);//TODO----
-							throw LogicError();//TODO----
+							if(code.get(t)==")")
+							{
+								Type type=castOrConstructorType;
+								
+								value=ExpressionValue();
+								
+								value.localVariableIndex=createTmp(localVariables,functionContext,type,false);
+								
+								expressionCode+=compileCallConstructorOfLocal(function,code,functionContext,localVariables,value.localVariableIndex);
+							}
+							else
+							{
+								Type type=castOrConstructorType;
+								
+								value=ExpressionValue();
+								
+								value.localVariableIndex=createTmp(localVariables,functionContext,type,false);
+								
+								t--;
+								expressionCode+=compileNonEmptyConstructorCallOfLocal(function,code,t,functionContext,localVariables,value.localVariableIndex);
+								t--;
+							}
 						}
+						
+						if(code.get(t)!=")")
+						{
+							code.addError(t,__LINE__);
+							throw ParseError();
+						}
+						t++;
 					}
-					
-					if(code.get(t)!=")")
-					{
-						code.addError(t,__LINE__);
-						throw ParseError();
-					}
-					t++;
 				}
 				else if(start=="nullptr")
 				{
@@ -3843,6 +5019,26 @@ class CodeTop
 				else if(start=="true")
 				{
 					expressionCode+=compileExpressionValueImmediate(functionContext,localVariables,value,Type("i64",0),1,true);
+					t++;
+				}
+				else if(start=="__datatype_count" || start=="__datatype_start")
+				{
+					value=ExpressionValue();
+					value.localVariableIndex=createTmp(localVariables,functionContext,Type("i64",1),false);
+					
+					string labelName;
+					if(start=="__datatype_count") labelName="datatype_count";
+					else if(start=="__datatype_start") labelName="datatype_start";
+					else
+					{
+						code.addError(t,__LINE__);
+						throw LogicError();
+					}
+					
+					string registerToUse="rax";
+					expressionCode+=string("mov ")+registerToUse+","+labelName+"\n";
+					expressionCode+=movRegisterToLocal(localVariables[value.localVariableIndex],registerToUse);
+					
 					t++;
 				}
 				else
@@ -3891,8 +5087,49 @@ class CodeTop
 						{
 							isStringLiteral=true;
 							
-							code.addError(t-1,__LINE__);
-							throw LogicError();
+							int stringIndex=createAssemblyString(literal);
+							
+							expressionCode+=compileExpressionValueImmediate(functionContext,localVariables,value,Type("u8",1),0,false,stringIndex);
+							
+							string stringClassName="string";
+							
+							int classIndex=findClassIndex(stringClassName);
+							if(classIndex==-1)
+							{
+								code.addError(t-1,__LINE__);
+								throw LogicError();
+							}
+							int functionIndex=-1;
+							for(int i=0;i<classes[classIndex].methods.size();i++)
+							{
+								CodeTopFunction& method=classes[classIndex].methods[i];
+								if(method.name=="constructor")
+								{
+									if(!method.returnsSomething && method.parameters.size()==1)
+									{
+										Type type=method.parameters[0].type;
+										if(type.name=="u8" && type.pointerLevels==1)
+										{
+											functionIndex=i;
+											break;
+										}
+									}
+								}
+							}
+							if(functionIndex==-1)
+							{
+								code.addError(t-1,__LINE__);
+								throw LogicError();
+							}
+							
+							ExpressionValue stringValue;
+							stringValue.localVariableIndex=createTmp(localVariables,functionContext,Type(stringClassName,0),false);
+							
+							ExpressionValue returnValue;
+							expressionCode+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,
+								vector<int>{stringValue.localVariableIndex,value.localVariableIndex},returnValue,false,Type(),false);
+							
+							value=stringValue;
 						}
 						else if(code.get(t)=="r")
 						{
@@ -4024,6 +5261,7 @@ class CodeTop
 								int methodClassIndex=-1;
 								int methodFunctionIndex=-1;
 								
+								if(!(type.name=="dynamic" && type.pointerLevels==0))
 								{
 									Type baseType=type;
 									while(code.get(t)==".")
@@ -4115,72 +5353,249 @@ class CodeTop
 				{
 					break;
 				}
+				
 				if(token==".")
 				{
+					LocalVariable v=localVariables[value.localVariableIndex];
 					t++;
 					string attribute=code.get(t);
 					
-					LocalVariable v=localVariables[value.localVariableIndex];
-					
-					Type baseType=v.type;
-					
-					bool isMethodCall=false;
-					int methodClassIndex=-1;
-					int methodFunctionIndex=-1;
-					
-					Type attributeType;
-					int offset=getOffsetAndTypeOfAttribute(baseType,attribute,attributeType);
-					if(offset==-1)
+					if(v.type.name=="dynamic" && v.type.pointerLevels==0)
 					{
-						if(baseType.pointerLevels>0)
+						int identifierIndex=getIdentifierIndex(attribute);
+						if(identifierIndex==-1)
 						{
 							code.addError(t,__LINE__);
 							throw NameError();
 						}
 						
-						methodClassIndex=findClassIndex(baseType.name);
-						int functionIndex=findMethodIndex(methodClassIndex,attribute);
-						if(functionIndex!=-1)
+						if(code.get(t+1)=="(")
 						{
-							isMethodCall=true;
-							methodFunctionIndex=functionIndex;
+							t++;
+							
+							int functionIndex=findFunctionIndex("__dynamic_get_method");
+							if(functionIndex==-1)
+							{
+								code.addError(t,__LINE__);
+								throw LogicError();
+							}
+							
+							ExpressionValue methodValue=ExpressionValue();
+							methodValue.localVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+							
+							int localVariableIndex2=createTmp(localVariables,functionContext,Type("i64",1),false);
+							{
+								string registerToUse="rax";
+								expressionCode+=movLocalAddressToRegister(localVariables[methodValue.localVariableIndex],0,registerToUse);
+								expressionCode+=movRegisterToLocal(localVariables[localVariableIndex2],registerToUse);
+							}
+							
+							int localVariableIndex3=createTmp(localVariables,functionContext,Type("i64",0),false);
+							expressionCode+=movImmediateToLocal(localVariables[localVariableIndex3],identifierIndex);
+							
+							{
+								ExpressionValue returnValue;
+								expressionCode+=compileCallFunction(function,code,functionContext,localVariables,-1,functionIndex,
+									vector<int>{value.localVariableIndex,localVariableIndex2,localVariableIndex3},returnValue,false,Type(),false);
+							}
+							
+							t++;
+							
+							vector<ExpressionValue> argRvalues;
+							
+							for(int i=0;;i++)
+							{
+								if(code.get(t)==")")
+								{
+									break;
+								}
+								
+								ExpressionValue argRvalue;
+								
+								expressionCode+=compileExpressionPart(function,code,t,functionContext,localVariables,argRvalue);
+								
+								argRvalues.push_back(argRvalue);
+								
+								if(code.get(t)==",")
+								{
+									t++;
+								}
+								else if(code.get(t)!=")")
+								{
+									code.addError(t,__LINE__);
+									throw ParseError();
+								}
+							}
+							
+							if(code.get(t)!=")")
+							{
+								code.addError(t,__LINE__);
+								throw ParseError();
+							}
+							t++;
+							
+							{
+								functionIndex=findFunctionIndex("__dynamic_function_check_number_of_arguments");
+								int argCountLocalVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+								expressionCode+=movImmediateToLocal(localVariables[argCountLocalVariableIndex],argRvalues.size());
+								
+								ExpressionValue returnValue;
+								expressionCode+=compileCallFunction(function,code,functionContext,localVariables,-1,functionIndex,
+									vector<int>{methodValue.localVariableIndex,argCountLocalVariableIndex},returnValue,false,Type(),false);
+							}
+							
+							for(int i=0;i<argRvalues.size();i++)
+							{
+								functionIndex=findFunctionIndex("__dynamic_function_check_parameter_type");
+								
+								int iLocalVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+								expressionCode+=movImmediateToLocal(localVariables[iLocalVariableIndex],i);
+								
+								LocalVariable arg=localVariables[argRvalues[i].localVariableIndex];
+								if(arg.type.pointerLevels>0)
+								{
+									code.addError(t,__LINE__);
+									throw LogicError();
+								}
+								
+								int typeLocalVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+								expressionCode+=movImmediateToLocal(localVariables[typeLocalVariableIndex],dataTypes.getIndexOf(arg.type.name));
+								
+								ExpressionValue returnValue;
+								expressionCode+=compileCallFunction(function,code,functionContext,localVariables,-1,functionIndex,
+									vector<int>{methodValue.localVariableIndex,iLocalVariableIndex,typeLocalVariableIndex},returnValue,false,Type(),false);
+							}
+							
+							ExpressionValue functionAddressValue;
+							functionAddressValue.localVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+							
+							ExpressionValue returnTypeIndexValue;
+							returnTypeIndexValue.localVariableIndex=createTmp(localVariables,functionContext,Type("i64",0),false);
+							
+							{
+								int functionIndex=findFunctionIndex("__dynamic_function_get_address_and_return_type");
+								if(functionIndex==-1)
+								{
+									code.addError(t,__LINE__);
+									throw LogicError();
+								}
+								
+								int aptrLocalVariableIndex=createTmp(localVariables,functionContext,Type("i64",1),false);
+								{
+									string registerToUse="rax";
+									expressionCode+=movLocalAddressToRegister(localVariables[functionAddressValue.localVariableIndex],0,registerToUse);
+									expressionCode+=movRegisterToLocal(localVariables[aptrLocalVariableIndex],registerToUse);
+								}
+								
+								int tptrLocalVariableIndex=createTmp(localVariables,functionContext,Type("i64",1),false);
+								{
+									string registerToUse="rax";
+									expressionCode+=movLocalAddressToRegister(localVariables[returnTypeIndexValue.localVariableIndex],0,registerToUse);
+									expressionCode+=movRegisterToLocal(localVariables[tptrLocalVariableIndex],registerToUse);
+								}
+								
+								ExpressionValue returnValue;
+								expressionCode+=compileCallFunction(function,code,functionContext,localVariables,-1,functionIndex,
+									vector<int>{methodValue.localVariableIndex,aptrLocalVariableIndex,tptrLocalVariableIndex},returnValue,false,Type(),false);
+							}
+							
+							vector<int> args;
+							args.push_back(value.localVariableIndex);
+							for(int i=0;i<argRvalues.size();i++)
+							{
+								args.push_back(argRvalues[i].localVariableIndex);
+							}
+							
+							expressionCode+=compileCallFunctionIndirect(function,code,functionContext,localVariables,functionAddressValue,
+								args,value,returnTypeIndexValue,attribute=="destructor");
 						}
 						else
 						{
-							code.addError(t,__LINE__);
-							throw NameError();
+							int functionIndex=findFunctionIndex("__dynamic_get_attribute");
+							if(functionIndex==-1)
+							{
+								code.addError(t,__LINE__);
+								throw LogicError();
+							}
+							
+							ExpressionValue resultValue=ExpressionValue();
+							resultValue.localVariableIndex=createTmp(localVariables,functionContext,Type("dynamic",0),false);
+							expressionCode+=movImmediateToLocal(localVariables[resultValue.localVariableIndex],0);
+							
+							int localVariableIndex3=createTmp(localVariables,functionContext,Type("i64",0),false);
+							expressionCode+=movImmediateToLocal(localVariables[localVariableIndex3],identifierIndex);
+							
+							ExpressionValue returnValue;
+							expressionCode+=compileCallFunction(function,code,functionContext,localVariables,-1,functionIndex,
+								vector<int>{value.localVariableIndex,resultValue.localVariableIndex,localVariableIndex3},returnValue,false,Type(),false);
+							
+							value=resultValue;
+							
+							t++;
 						}
-					}
-					
-					t++;
-					
-					if(isMethodCall)
-					{
-						ExpressionValue thisValue=value;
-						
-						expressionCode+=compileFunctionCall(function,code,t,functionContext,localVariables,value,
-							methodClassIndex,methodFunctionIndex,thisValue);
 					}
 					else
 					{
-						string registerToUse="rax";
+						Type baseType=v.type;
 						
-						if(v.isReference)
+						bool isMethodCall=false;
+						int methodClassIndex=-1;
+						int methodFunctionIndex=-1;
+						
+						Type attributeType;
+						int offset=getOffsetAndTypeOfAttribute(baseType,attribute,attributeType);
+						if(offset==-1)
 						{
-							expressionCode+=movLocalToRegister(v,registerToUse);
+							if(baseType.pointerLevels>0)
+							{
+								code.addError(t,__LINE__);
+								throw NameError();
+							}
+							
+							methodClassIndex=findClassIndex(baseType.name);
+							int functionIndex=findMethodIndex(methodClassIndex,attribute);
+							if(functionIndex!=-1)
+							{
+								isMethodCall=true;
+								methodFunctionIndex=functionIndex;
+							}
+							else
+							{
+								code.addError(t,__LINE__);
+								throw NameError();
+							}
+						}
+						
+						t++;
+						
+						if(isMethodCall)
+						{
+							ExpressionValue thisValue=value;
+							
+							expressionCode+=compileFunctionCall(function,code,t,functionContext,localVariables,value,
+								methodClassIndex,methodFunctionIndex,thisValue);
 						}
 						else
 						{
-							expressionCode+=movLocalAddressToRegister(v,0,registerToUse);
+							string registerToUse="rax";
+							
+							if(v.isReference)
+							{
+								expressionCode+=movLocalToRegister(v,registerToUse);
+							}
+							else
+							{
+								expressionCode+=movLocalAddressToRegister(v,0,registerToUse);
+							}
+							
+							expressionCode+=string("add ")+registerToUse+","+to_string(offset)+"\n";
+							
+							value=ExpressionValue();
+							
+							value.localVariableIndex=createTmp(localVariables,functionContext,attributeType,true);
+							
+							expressionCode+=movRegisterToLocal(localVariables[value.localVariableIndex],registerToUse);
 						}
-						
-						expressionCode+=string("add ")+registerToUse+","+to_string(offset)+"\n";
-						
-						value=ExpressionValue();
-						
-						value.localVariableIndex=createTmp(localVariables,functionContext,attributeType,true);
-						
-						expressionCode+=movRegisterToLocal(localVariables[value.localVariableIndex],registerToUse);
 					}
 				}
 				else if(token=="[")
@@ -4218,9 +5633,52 @@ class CodeTop
 					}
 					else if(!dataTypes[v.type.name].isInteger)
 					{
-						//TODO----
-						code.addError(t,__LINE__);//----
-						throw LogicError();//----
+						if(v.type.name=="dynamic")
+						{
+							//TODO----
+							code.addError(t,__LINE__);//----
+							throw LogicError();//----
+						}
+						else
+						{
+							ExpressionValue argument;
+							expressionCode+=compileExpressionPart(function,code,t,functionContext,localVariables,argument);
+							
+							int classIndex=findClassIndex(v.type.name);
+							int functionIndex=findFunctionIndexWithArgumentsReturnMinus2IfCollision(classIndex,"[]",localVariables,vector<ExpressionValue>{argument});
+							if(functionIndex==-1)
+							{
+								code.addError(t,__LINE__);
+								throw LogicError();
+							}
+							
+							CodeTopFunction& method=classes[classIndex].methods[functionIndex];
+							
+							bool includeReturnReference= method.returnsSomething && isTypePassedByReference(method.returnType) && !method.returnsReference;
+							
+							ExpressionValue returnReference;
+							if(includeReturnReference)
+							{
+								expressionCode+=createObjectAndGetReference(function,code,functionContext,localVariables,returnReference,method.returnType);
+							}
+							
+							vector<int> args;
+							if(includeReturnReference) args.push_back(returnReference.localVariableIndex);
+							
+							args.push_back(value.localVariableIndex);
+							args.push_back(argument.localVariableIndex);
+							
+							ExpressionValue returnValue;
+							expressionCode+=compileCallFunction(function,code,functionContext,localVariables,classIndex,functionIndex,
+								args,returnValue,method.returnsSomething && !includeReturnReference,method.returnType,method.returnsReference);
+							
+							if(includeReturnReference)
+							{
+								returnValue=returnReference;
+							}
+							
+							value=returnValue;
+						}
 					}
 					else
 					{
@@ -4454,8 +5912,6 @@ class CodeTop
 						throw ParseError();
 					}
 				}
-				
-				//TODO--------
 			}
 			
 			return expressionCode;

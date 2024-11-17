@@ -1,3 +1,383 @@
+class RuntimeException
+{
+	i64 internal_message;
+	
+	fn constructor()()
+	{
+		internal_message=i64(r"Not defined exception");
+	}
+	fn constructor()(ptr(u8) rawMessage)
+	{
+		internal_message=i64(rawMessage);
+	}
+	fn getRawMessage(ptr(u8))()
+	{
+		return ptr(u8)(internal_message);
+	}
+}
+
+fn __dynamic_constructor()(ptr(i64) dynPtr)
+{
+	deref(dynPtr)=0;
+}
+
+fn __dynamic_destructor()(ptr(i64) dynPtr)
+{
+	if(deref(dynPtr))
+	{
+		i64 type=ptr(i64)(deref(dynPtr))[0];
+		if(u64(type)<u64(deref(__datatype_count)))
+		{
+			i64 isReference=ptr(i64)(deref(dynPtr))[1];
+			if(isReference==0)
+			{
+				i64 dataAddress=ptr(i64)(deref(dynPtr))[2];
+				if(dataAddress)
+				{
+					i64 destructorAddress=ptr(i64)(__datatype_start[type])[3];
+					__call_destructor(destructorAddress,dataAddress);
+					__free(ptr(u8)(dataAddress));
+				}
+			}
+		}
+		__free(ptr(u8)(deref(dynPtr)));
+		deref(dynPtr)=0;
+	}
+}
+
+fn __dynamic_assignment_operator()(ptr(i64) dynPtr,ptr(i64) dynBPtr)
+{
+	__dynamic_assign(dynPtr,i64(dynBPtr),dynamic);
+}
+
+fn __dynamic_assign()(ptr(i64) dynPtr,i64 rvalue,i64 rvalueType)
+{
+	__dynamic_assign_internal(dynPtr,rvalue,rvalueType,false);
+}
+
+fn __dynamic_assign_internal()(ptr(i64) dynPtr,i64 rvalue,i64 rvalueType,i64 assignDataReference)
+{
+	if(rvalueType==dynamic)
+	{
+		if(deref(ptr(i64)(rvalue)))
+		{
+			__dynamic_typeof(ptr(i64)(rvalue),addressof(rvalueType));
+			
+			i64 dataAddress=ptr(i64)(deref(ptr(i64)(rvalue)))[2];
+			if(dataAddress)
+			{
+				rvalue=dataAddress;
+				if(rvalueType<8 && !assignDataReference)
+				{
+					i64 size=(i64(1)<<(rvalueType&3));
+					if(size==1) rvalue=i64(deref(ptr(i8)(rvalue)));
+					if(size==2) rvalue=i64(deref(ptr(i16)(rvalue)));
+					if(size==4) rvalue=i64(deref(ptr(i32)(rvalue)));
+					if(size==8) rvalue=deref(ptr(i64)(rvalue));
+				}
+			}
+			else
+			{
+				rvalue=0;
+			}
+		}
+		else
+		{
+			__dynamic_destructor(dynPtr);
+			return;
+		}
+	}
+	
+	if(deref(dynPtr))
+	{
+		i64 type=ptr(i64)(deref(dynPtr))[0];
+		if(type==rvalueType)
+		{
+			if(assignDataReference)
+			{
+				ptr(i64)(deref(dynPtr))[1]=1;
+				ptr(i64)(deref(dynPtr))[2]=rvalue;
+				return;
+			}
+			elif(u64(type)<u64(deref(__datatype_count)))
+			{
+				i64 dataAddress=deref(ptr(i64)(deref(dynPtr)+16));
+				if(dataAddress)
+				{
+					i64 assignmentAddress=ptr(i64)(__datatype_start[type])[4];
+					i64 dataB=rvalue;
+					if(rvalueType>=8) rvalue=deref(ptr(i64)(dataB));
+					__call(assignmentAddress,dataAddress,dataB);
+					return;
+				}
+			}
+		}
+	}
+	
+	__dynamic_destructor(dynPtr);
+	
+	if(assignDataReference)
+	{
+		i64 dynSize=ptr(i64)(__datatype_start[rvalueType])[0];
+		
+		deref(dynPtr)=i64(__malloc(24));
+		if(deref(dynPtr)==0)
+		{
+			throw RuntimeException(r"Not enough memory for dynamic");
+		}
+		ptr(i64)(deref(dynPtr))[0]=rvalueType;
+		ptr(i64)(deref(dynPtr))[1]=1;
+		ptr(i64)(deref(dynPtr))[2]=rvalue;
+	}
+	elif(rvalueType<8)
+	{
+		i64 dynSize=(i64(1)<<(rvalueType&3));
+		
+		deref(dynPtr)=i64(__malloc(24));
+		if(deref(dynPtr)==0)
+		{
+			throw RuntimeException(r"Not enough memory for dynamic");
+		}
+		ptr(i64)(deref(dynPtr))[0]=rvalueType;
+		ptr(i64)(deref(dynPtr))[1]=0;
+		ptr(i64)(deref(dynPtr))[2]=i64(__malloc(dynSize));
+		if(ptr(i64)(deref(dynPtr))[2]==0)
+		{
+			throw RuntimeException(r"Not enough memory for dynamic");
+		}
+		
+		i64 dynValueAddress=ptr(i64)(deref(dynPtr))[2];
+		for(i64 i=0;i<dynSize;i++)
+		{
+			ptr(u8)(dynValueAddress)[i]=ptr(u8)(addressof(rvalue))[i];
+		}
+	}
+	else
+	{
+		i64 dynSize=ptr(i64)(__datatype_start[rvalueType])[0];
+		
+		deref(dynPtr)=i64(__malloc(24));
+		if(deref(dynPtr)==0)
+		{
+			throw RuntimeException(r"Not enough memory for dynamic");
+		}
+		ptr(i64)(deref(dynPtr))[0]=rvalueType;
+		ptr(i64)(deref(dynPtr))[1]=0;
+		ptr(i64)(deref(dynPtr))[2]=i64(__malloc(dynSize));
+		if(ptr(i64)(deref(dynPtr))[2]==0)
+		{
+			throw RuntimeException(r"Not enough memory for dynamic");
+		}
+		
+		i64 dataAddress=ptr(i64)(deref(dynPtr))[2];
+		i64 assignmentAddress=ptr(i64)(__datatype_start[rvalueType])[4];
+		__call(assignmentAddress,dataAddress,rvalue);
+	}
+}
+
+fn __dynamic_get_attribute()(ptr(i64) dynPtr,ptr(i64) outputDynPtr,i64 identifierIndex)
+{
+	if(deref(dynPtr))
+	{
+		i64 type=ptr(i64)(deref(dynPtr))[0];
+		
+		if(u64(type)<u64(deref(__datatype_count)))
+		{
+			i64 dataAddress=ptr(i64)(deref(dynPtr))[2];
+			i64 attributeCount=ptr(i64)(__datatype_start[type])[5];
+			ptr(i64) attributeList=ptr(i64)(ptr(i64)(__datatype_start[type])[6]);
+			for(i64 i=0;i<attributeCount;i++)
+			{
+				i64 index=i*4;
+				if(identifierIndex==attributeList[index])
+				{
+					i64 type=attributeList[index+1];
+					i64 rvalue=dataAddress+attributeList[index+2];
+					__dynamic_assign_internal(outputDynPtr,rvalue,type,true);
+					return;
+				}
+			}
+		}
+		
+		throw RuntimeException(r"Getting non-existent attribute from dynamic");
+	}
+	else
+	{
+		throw RuntimeException(r"Getting non-existent attribute from dynamic");
+	}
+}
+
+fn __dynamic_get_method()(ptr(i64) dynPtr,ptr(i64) methodPtr,i64 identifierIndex)
+{
+	if(deref(dynPtr))
+	{
+		i64 type=ptr(i64)(deref(dynPtr))[0];
+		
+		if(u64(type)<u64(deref(__datatype_count)))
+		{
+			i64 methodCount=ptr(i64)(__datatype_start[type])[7];
+			ptr(i64) methodList=ptr(i64)(ptr(i64)(__datatype_start[type])[8]);
+			for(i64 i=0;i<methodCount;i++)
+			{
+				i64 index=i*8;
+				if(identifierIndex==methodList[index])
+				{
+					deref(methodPtr)=i64(addressof(methodList[index]));
+					return;
+				}
+			}
+		}
+		
+		throw RuntimeException(r"Getting non-existent method from dynamic");
+	}
+	else
+	{
+		throw RuntimeException(r"Getting non-existent method from dynamic");
+	}
+}
+
+fn __dynamic_function_check_number_of_arguments()(i64 functionInfoAddress,i64 numberOfArguments)
+{
+	i64 numberOfParameters=ptr(i64)(functionInfoAddress)[3];
+	if(numberOfArguments!=numberOfParameters)
+	{
+		throw RuntimeException(r"Function arguments don't match (number of arguments)");
+	}
+}
+
+fn __dynamic_function_check_parameter_type()(i64 functionInfoAddress,i64 parameterIndex,i64 argumentType)
+{
+	ptr(i64) params=ptr(i64)(ptr(i64)(functionInfoAddress)[4]);
+	i64 parameterType=params[parameterIndex];
+	if(argumentType!=parameterType)
+	{
+		throw RuntimeException(r"Function arguments don't match (argument type)");
+	}
+}
+
+fn __dynamic_function_get_address_and_return_type()(i64 functionInfoAddress,ptr(i64) outputFunctionAddress,ptr(i64) outputReturnType)
+{
+	deref(outputFunctionAddress)=ptr(i64)(functionInfoAddress)[1];
+	deref(outputReturnType)=ptr(i64)(functionInfoAddress)[2];
+}
+
+fn __dynamic_cast_to_type()(ptr(i64) dynPtr,ptr(i64) outputPtr,i64 type)
+{
+	if(deref(dynPtr))
+	{
+		i64 dynType=ptr(i64)(deref(dynPtr))[0];
+		if(dynType!=type)
+		{
+			throw RuntimeException(r"Failed dynamic cast");
+		}
+		deref(outputPtr)=ptr(i64)(deref(dynPtr))[2];
+	}
+	else
+	{
+		throw RuntimeException(r"Failed dynamic cast");
+	}
+}
+
+fn __dynamic_sizeof()(ptr(i64) dynPtr,ptr(i64) outputPtr)
+{
+	if(deref(dynPtr))
+	{
+		i64 type=ptr(i64)(deref(dynPtr))[0];
+		if(u64(type)>=u64(deref(__datatype_count)))
+		{
+			throw RuntimeException(r"Failed sizeof of dynamic (type outside range)");
+		}
+		deref(outputPtr)=ptr(i64)(__datatype_start[type])[0];
+	}
+	else deref(outputPtr)=sizeof(dynamic);
+}
+
+fn __dynamic_alignof()(ptr(i64) dynPtr,ptr(i64) outputPtr)
+{
+	if(deref(dynPtr))
+	{
+		i64 type=ptr(i64)(deref(dynPtr))[0];
+		if(u64(type)>=u64(deref(__datatype_count)))
+		{
+			throw RuntimeException(r"Failed alignof of dynamic (type outside range)");
+		}
+		deref(outputPtr)=ptr(i64)(__datatype_start[type])[1];
+	}
+	else deref(outputPtr)=alignof(dynamic);
+}
+
+fn __dynamic_typeof()(ptr(i64) dynPtr,ptr(i64) outputPtr)
+{
+	if(deref(dynPtr))
+	{
+		deref(outputPtr)=ptr(i64)(deref(dynPtr))[0];
+	}
+	else deref(outputPtr)=typeof(dynamic);
+}
+
+fn __dynamic_cast_integer_to_integer()(ptr(i64) dynPtr,ptr(i64) outputPtr,i64 outputType)
+{
+	if(deref(dynPtr))
+	{
+		i64 dynType=ptr(i64)(deref(dynPtr))[0];
+		i64 dynValueAddress=ptr(i64)(deref(dynPtr))[2];
+		
+		if(dynType>7)
+		{
+			throw RuntimeException(r"Failed dynamic cast to integer (not an integer)");
+		}
+		i64 dynSign=i64(dynType>=4);
+		i64 dynSize=(i64(1)<<(dynType&3));
+		
+		i64 outputSign=i64(outputType>=4);
+		i64 outputSize=(i64(1)<<(outputType&3));
+		
+		if(dynSign==outputSign)
+		{
+			u64 v=0;
+			for(i64 i=0;i<dynSize;i++)
+			{
+				ptr(u8)(addressof(v))[i]=ptr(u8)(dynValueAddress)[i];
+			}
+			
+			if(dynSign)
+			{
+				if(ptr(u8)(addressof(v))[dynSize-1]&0x80)
+				{
+					for(i64 i=dynSize;i<outputSize;i++)
+					{
+						ptr(u8)(addressof(v))[i]=0xff;
+					}
+				}
+			}
+			
+			for(i64 i=0;i<outputSize;i++)
+			{
+				ptr(u8)(outputPtr)[i]=ptr(u8)(addressof(v))[i];
+			}
+		}
+		elif(dynSize==outputSize)
+		{
+			for(i64 i=0;i<dynSize;i++)
+			{
+				ptr(u8)(outputPtr)[i]=ptr(u8)(dynValueAddress)[i];
+			}
+		}
+		else
+		{
+			throw RuntimeException(r"Failed dynamic cast to integer");
+		}
+	}
+	else
+	{
+		throw RuntimeException(r"Failed dynamic cast to integer (not an integer)");
+	}
+}
+
+
+
+
+
 fn __syscall(i64)(i64 syscallNumber,i64 arg0,i64 arg1,i64 arg2,i64 arg3,i64 arg4,i64 arg5)
 {
 	i64 returnValue;
@@ -523,7 +903,13 @@ fn __free(u8)(ptr(u8) pointer)
 	return deref(PROCESS_MEMORY_ALLOCATION_SYSTEM).free(pointer);
 }
 
-
+fn __main(i64)(i64 argc,ptr(ptr(u8)) argv)
+{
+	MemoryAllocationSystem memoryAllocationSystem;
+	if(!memoryAllocationSystem.initialize()) return 1;
+	PROCESS_MEMORY_ALLOCATION_SYSTEM=addressof(memoryAllocationSystem);
+	return __main2(argc,argv);
+}
 
 fn strlen(i64)(ptr(u8) str)
 {
@@ -535,28 +921,308 @@ fn strlen(i64)(ptr(u8) str)
 	return i;
 }
 
-fn print()(ptr(u8) str)
+fn printr()(ptr(u8) str)
 {
 	__write(1,str,strlen(str));
 }
 
+fn __main2(i64)(i64 argc,ptr(ptr(u8)) argv)
+{
+	try
+	{
+		return main(argc,argv);
+	}
+	catch(dynamic e)
+	{
+		if(typeof(e)==RuntimeException)
+		{
+			RuntimeException re=e;
+			printr(r"exception: RuntimeException: ");
+			printr(re.getRawMessage());
+			printr(r"\n");
+		}
+		else
+		{
+			printr(r"exception: Not known exception\n");
+		}
+	}
+}
+
+
+
+fn uToString(string)(u64 integer)
+{
+	string str;
+	while(integer)
+	{
+		u64 digit=integer%10;
+		integer/=10;
+		str.put(b'0'+u8(digit));
+	}
+	if(str.size()==0) str.put(b'0');
+	
+	string str2;
+	for(i64 i=str.size()-1;i>=0;i--)
+	{
+		str2.put(str[i]);
+	}
+	return str2;
+}
+
+fn iToString(string)(i64 integer)
+{
+	if(integer<0) return "-"+uToString(u64(-integer));
+	else return uToString(u64(integer));
+}
+
+class string
+{
+	ptr(u8) internal_data;
+	i64 internal_size;
+	i64 internal_reservedSize;
+	
+	
+	
+	fn constructor()()
+	{
+		internal_initialize();
+	}
+	fn constructor()(ptr(u8) raw)
+	{
+		internal_clear();
+		i64 initialSize=strlen(raw)+1;
+		internal_data=internal_allocate(initialSize);
+		internal_reservedSize=initialSize;
+		internal_size=initialSize;
+		internal_copy(internal_data,raw,initialSize);
+	}
+	fn constructor()(i64 integer)
+	{
+		internal_constructor_integer(integer);
+	}
+	fn constructor()(u64 integer)
+	{
+		internal_constructor_u_integer(integer);
+	}
+	fn destructor()()
+	{
+		internal_deinitialize();
+	}
+	fn operator(=)()(string str)
+	{
+		if(addressof(str)==addressof(this)) return;
+		internal_checkInitialized();
+		ptr(u8) newData=internal_allocate(str.internal_size);
+		internal_copy(newData,str.internal_data,str.internal_size);
+		internal_free(internal_data);
+		internal_data=newData;
+		internal_reservedSize=str.internal_size;
+		internal_size=str.internal_size;
+	}
+	
+	fn size(i64)()
+	{
+		internal_checkInitialized();
+		return internal_size-1;
+	}
+	fn data(ptr(u8))()
+	{
+		internal_checkInitialized();
+		return internal_data;
+	}
+	fn clear()()
+	{
+		internal_checkInitialized();
+		internal_resize(1);
+	}
+	fn resize()(i64 newSize)
+	{
+		internal_checkInitialized();
+		i64 newInternalSize=newSize+1;
+		i64 oldSize=internal_size;
+		internal_resize(newInternalSize);
+		if(newInternalSize>oldSize) internal_setTo(internal_data,oldSize,newInternalSize,0);
+	}
+	fn capacity(i64)()
+	{
+		internal_checkInitialized();
+		return internal_reservedSize-1;
+	}
+	fn reserve()(i64 newCapacity)
+	{
+		internal_checkInitialized();
+		i64 newReservedSize=newCapacity+1;
+		if(newReservedSize>internal_reservedSize)
+		{
+			internal_setCapacity(newReservedSize);
+		}
+	}
+	fn shrinkToFit()()
+	{
+		internal_checkInitialized();
+		internal_setCapacity(internal_size);
+	}
+	fn add()(string str)
+	{
+		internal_checkInitialized();
+		if(str.internal_data!=nullptr)
+		{
+			i64 oldSize=internal_size;
+			i64 strSize=str.internal_size;
+			internal_resize(internal_size+str.internal_size-1);
+			internal_copy(internal_data+oldSize-1,str.internal_data,strSize-1);
+		}
+	}
+	fn put()(u8 byte)
+	{
+		internal_checkInitialized();
+		internal_resize(internal_size+1);
+		internal_data[internal_size-2]=byte;
+	}
+	fn operator([])(ref(u8))(i64 index)
+	{
+		return internal_data[index];
+	}
+	fn at(ref(u8))(i64 index)
+	{
+		internal_checkInitialized();
+		if(u64(index)>=u64(internal_size-1)) throw RuntimeException(r"Out of range of string");
+		return internal_data[index];
+	}
+	fn front(ref(u8))()
+	{
+		return at(0);
+	}
+	fn back(ref(u8))()
+	{
+		return at(size()-1);
+	}
+	
+	fn internal_constructor_integer()(i64 integer)
+	{
+		internal_clear();
+		this=iToString(integer);
+	}
+	fn internal_constructor_u_integer()(u64 integer)
+	{
+		internal_clear();
+		this=uToString(integer);
+	}
+	fn internal_resize()(i64 newSize)
+	{
+		if(newSize==internal_size) return;
+		if(newSize<internal_size)
+		{
+			internal_size=newSize;
+			internal_data[newSize-1]=0;
+		}
+		else
+		{
+			if(newSize>internal_reservedSize)
+			{
+				i64 newReservedSize=newSize*2;
+				internal_setCapacity(newReservedSize);
+			}
+			internal_size=newSize;
+			internal_data[newSize-1]=0;
+		}
+	}
+	fn internal_setCapacity()(i64 newReservedSize)
+	{
+		if(newReservedSize==internal_reservedSize) return;
+		if(newReservedSize<internal_size) return;
+		ptr(u8) newData=internal_allocate(newReservedSize);
+		internal_copy(newData,internal_data,internal_size);
+		internal_free(internal_data);
+		internal_data=newData;
+		internal_reservedSize=newReservedSize;
+	}
+	fn internal_checkInitialized()()
+	{
+		if(internal_data==nullptr) internal_initialize();
+	}
+	fn internal_initialize()()
+	{
+		internal_clear();
+		i64 initialSize=1;
+		internal_data=internal_allocate(initialSize);
+		internal_reservedSize=initialSize;
+		internal_size=initialSize;
+		internal_data[0]=0;
+	}
+	fn internal_deinitialize()()
+	{
+		if(internal_data!=nullptr) internal_free(internal_data);
+		internal_clear();
+	}
+	fn internal_setTo()(ptr(u8) array,i64 start,i64 end_,u8 value)
+	{
+		for(i64 i=start;i<end_;i++)
+		{
+			array[i]=value;
+		}
+	}
+	fn internal_copy()(ptr(u8) a,ptr(u8) b,i64 bytes)
+	{
+		for(i64 i=0;i<bytes;i++)
+		{
+			a[i]=b[i];
+		}
+	}
+	fn internal_clear()()
+	{
+		internal_data=nullptr;
+		internal_size=0;
+		internal_reservedSize=0;
+	}
+	fn internal_allocate(ptr(u8))(i64 space)
+	{
+		ptr(u8) array=__malloc(space);
+		if(array==nullptr) throw RuntimeException(r"Not enough memory for string");
+		return array;
+	}
+	fn internal_free()(ptr(u8) array)
+	{
+		__free(array);
+	}
+}
+
+fn operator(+)(string)(string a,string b)
+{
+	string c=a;
+	c.add(b);
+	return c;
+}
+
+fn operator(==)(u8)(string a,string b)
+{
+	if(a.size()!=b.size()) return false;
+	for(i64 i=0;i<a.size();i++)
+	{
+		if(a[i]!=b[i]) return false;
+	}
+	return true;
+}
+
+fn operator(!=)(u8)(string a,string b)
+{
+	return !(a==b);
+}
+
+fn print()(string str)
+{
+	printr(str.data());
+}
+
+
 fn main(i64)(i64 argc,ptr(ptr(u8)) argv)
 {
-	MemoryAllocationSystem memoryAllocationSystem;
-	memoryAllocationSystem.initialize();
-	PROCESS_MEMORY_ALLOCATION_SYSTEM=addressof(memoryAllocationSystem);
+	print("Hello world\n");
 	
-	print(r"Hello world\n");
+	i64 number=7;
+	number+=5;
 	
-	ptr(u8) array=__malloc(1024);
-	
-	array[0]=b'A';
-	array[1]=b'\n';
-	array[2]=0;
-	
-	print(array);
-	
-	__free(array);
+	print("Number="+string(number)+"\n");
 	
 	return 0;
 }

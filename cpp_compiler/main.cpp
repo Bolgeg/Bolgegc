@@ -336,16 +336,53 @@ class NamedVector
 	
 	int getIndexOf(const string& name)
 	{
-		return nameToIndex.at(name);
+		try
+		{
+			return nameToIndex.at(name);
+		}
+		catch(...)
+		{
+			throw nameMapAtError(name);
+		}
 	}
 	
 	T& operator [](size_t index)
 	{
-		return elements.at(index);
+		try
+		{
+			return elements.at(index);
+		}
+		catch(...)
+		{
+			string mapContent;
+			for(int i=0;i<elements.size();i++)
+			{
+				mapContent+=elements[i].name+"\n";
+			}
+			throw string("FATAL ERROR - Exception on NamedVector's map::at(\""+to_string(index)+"\"). NamedVector content:\n"+mapContent);
+		}
 	}
+	private:
+		string nameMapAtError(const string& name)
+		{
+			string mapContent;
+			for(int i=0;i<elements.size();i++)
+			{
+				mapContent+=elements[i].name+"\n";
+			}
+			return string("FATAL ERROR - Exception on NamedVector's map::at(\""+name+"\"). NamedVector content:\n"+mapContent);
+		}
+	public:
 	T& operator [](const string& name)
 	{
-		return elements[nameToIndex.at(name)];
+		try
+		{
+			return elements[nameToIndex.at(name)];
+		}
+		catch(...)
+		{
+			throw nameMapAtError(name);
+		}
 	}
 	
 	size_t size() const
@@ -1562,6 +1599,8 @@ class CodeTop
 					if(function.returnsReference) continue;
 				}
 				
+				if(function.returnsSomething) continue;//TODO---- NOT IMPLEMENTED
+				
 				bool parameterError=false;
 				string outputParameters;
 				for(int j=0;j<function.parameters.size();j++)
@@ -2424,7 +2463,7 @@ class CodeTop
 			return output;
 		}
 		string compileCallFunctionIndirect(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& functionAddressValue,const vector<int>& argumentIndexes,ExpressionValue& value,ExpressionValue& returnTypeIndexValue,bool isDestructor)
+			ExpressionValue functionAddressValue,const vector<int>& argumentIndexes,ExpressionValue& value,ExpressionValue returnTypeIndexValue,bool isDestructor)
 		{
 			string output;
 			
@@ -2445,6 +2484,9 @@ class CodeTop
 			}
 			
 			{
+				//Case: The function returns an object (not primitive)
+				//TODO---- NOT IMPLEMENTED
+				
 				vector<int> argumentIndexes2=argumentIndexes;
 				argumentIndexes2.insert(argumentIndexes2.begin(),value.localVariableIndex);
 				
@@ -2463,6 +2505,8 @@ class CodeTop
 			output+=getAssemblyLabelName(skipReturnLabel)+":\n";
 			
 			{
+				//Case: The function returns a primitive (not an object), or returns nothing
+				
 				output+=compileCallFunctionPutParameters(function,code,functionContext,localVariables,argumentIndexes);
 				
 				{
@@ -2489,6 +2533,8 @@ class CodeTop
 						output+=string("je ")+getAssemblyLabelName(skipReturnValueLabel)+"\n";
 					}
 					{
+						//Case: The function returns a primitive (not an object)
+						
 						int functionIndex=findFunctionIndex("__dynamic_assign");
 						if(functionIndex==-1)
 						{
@@ -2590,7 +2636,7 @@ class CodeTop
 			return output;
 		}
 		string compileCallFunction(CodeTopFunction& function,TokenizedCode& code,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			int classIndex,int functionIndex,const vector<int>& argumentIndexes,ExpressionValue& value,bool getReturnValue,const Type& returnValueType,bool returnsReference)
+			int classIndex,int functionIndex,const vector<int>& argumentIndexes,ExpressionValue& value,bool getReturnValue,Type returnValueType,bool returnsReference)
 		{
 			string output;
 			
@@ -2792,7 +2838,7 @@ class CodeTop
 			return true;
 		}
 		string compileCmpZeroJump(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& value,int label,const string& jumpInstructionName)
+			ExpressionValue value,int label,const string& jumpInstructionName)
 		{
 			string output;
 			
@@ -3497,7 +3543,7 @@ class CodeTop
 			
 			return expressionCode;
 		}
-		string compileExpressionValueImmediate(FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,ExpressionValue& value,const Type& type,uint64_t integer,
+		string compileExpressionValueImmediate(FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,ExpressionValue& value,Type type,uint64_t integer,
 			bool isIntegerLiteral,int stringIndex=-1)
 		{
 			string expressionCode;
@@ -3528,7 +3574,7 @@ class CodeTop
 			assembly.numberOfStrings++;
 			return index;
 		}
-		int getOffsetAndTypeOfAttribute(const Type& baseType,const string& attributeName,Type& attributeType)
+		int getOffsetAndTypeOfAttribute(Type baseType,const string& attributeName,Type& attributeType)
 		{
 			int offset=0;
 			
@@ -3540,7 +3586,7 @@ class CodeTop
 			
 			return offset;
 		}
-		bool isAssignable(NamedVector<LocalVariable>& localVariables,const Type& lvalueType,const ExpressionValue& rvalueExpression)
+		bool isAssignable(NamedVector<LocalVariable>& localVariables,Type lvalueType,const ExpressionValue& rvalueExpression)
 		{
 			LocalVariable rvalue=localVariables[rvalueExpression.localVariableIndex];
 			
@@ -3840,7 +3886,7 @@ class CodeTop
 			return output;
 		}
 		string compileOperator(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& lvalue,ExpressionValue& value,int level,const string& op)
+			ExpressionValue lvalue,ExpressionValue& value,int level,const string& op)
 		{
 			string expressionCode;
 			
@@ -4014,7 +4060,7 @@ class CodeTop
 				//Any other combination of types (overloaded operator)
 				if(vlvalue.type.name=="dynamic" || vrvalue.type.name=="dynamic")
 				{
-					//TODO----
+					//TODO---- NOT IMPLEMENTED
 					code.addError(t,__LINE__);//----
 					throw LogicError();//----
 				}
@@ -4105,14 +4151,14 @@ class CodeTop
 			else
 			{
 				//Any other type (overloaded operator)
-				//TODO----
+				//TODO---- NOT IMPLEMENTED
 				code.addError(t,__LINE__);//----
 				throw LogicError();//----
 			}
 			
 			return expressionCode;
 		}
-		string castPrimitive(const string& reg,const Type& initialType,const Type& resultType,bool& success)
+		string castPrimitive(const string& reg,Type initialType,Type resultType,bool& success)
 		{
 			string output;
 			
@@ -4151,7 +4197,7 @@ class CodeTop
 			return output;
 		}
 		string compileCastFromDynamic(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& inputValue,ExpressionValue& outputValue,const Type& type)
+			ExpressionValue inputValue,ExpressionValue& outputValue,Type type)
 		{
 			string output;
 			
@@ -4177,7 +4223,7 @@ class CodeTop
 			return output;
 		}
 		string compileAssignment(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& lvalue,ExpressionValue& rvalue,bool& success)
+			ExpressionValue lvalue,ExpressionValue rvalue,bool& success)
 		{
 			string output;
 			
@@ -4240,7 +4286,7 @@ class CodeTop
 			return output;
 		}
 		string compileAssignmentOperatorUnary(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& value,const string& op)
+			ExpressionValue value,const string& op)
 		{
 			string output;
 			
@@ -4281,7 +4327,7 @@ class CodeTop
 			}
 			else
 			{
-				//TODO----
+				//TODO---- NOT IMPLEMENTED
 				code.addError(t,__LINE__);//----
 				throw LogicError();//----
 			}
@@ -4289,7 +4335,7 @@ class CodeTop
 			return output;
 		}
 		string compileAssignmentOperator(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& lvalue,const string& op)
+			ExpressionValue lvalue,const string& op)
 		{
 			string output;
 			
@@ -4401,7 +4447,7 @@ class CodeTop
 			return output;
 		}
 		string compileFunctionCall(CodeTopFunction& function,TokenizedCode& code,size_t& t,FunctionContext& functionContext,NamedVector<LocalVariable>& localVariables,
-			ExpressionValue& value,int classIndex,int functionIndex,const ExpressionValue& thisValue,bool isNonEmptyConstructor=false)
+			ExpressionValue& value,int classIndex,int functionIndex,const ExpressionValue thisValue,bool isNonEmptyConstructor=false)
 		{
 			string output;
 			
@@ -4514,40 +4560,53 @@ class CodeTop
 				
 				bool passedByReference=isTypePassedByReference(parameterType);
 				
+				bool nonDynamicToDynamic=(parameterType.name=="dynamic" && parameterType.pointerLevels==0 && localVariables[argRvalue.localVariableIndex].type.name!="dynamic");
+				
+				if(nonDynamicToDynamic) passedByReference=false;
+				
 				ExpressionValue arg;
 				arg.localVariableIndex=createTmp(localVariables,functionContext,parameterType,passedByReference);
 				
-				if(passedByReference)
+				if(nonDynamicToDynamic)
 				{
-					LocalVariable argInput=localVariables[argRvalue.localVariableIndex];
-					Type argumentType=argInput.type;
-					if(argumentType.name!=parameterType.name && argumentType.pointerLevels!=parameterType.pointerLevels)
-					{
-						code.addError(t,__LINE__);
-						throw LogicError();
-					}
+					output+=movImmediateToLocal(localVariables[arg.localVariableIndex],0);
 					
-					LocalVariable argOutput=localVariables[arg.localVariableIndex];
-					string registerToUse="rax";
-					if(argInput.isReference)
-					{
-						output+=movLocalToRegister(argInput,registerToUse);
-						output+=movRegisterToLocal(argOutput,registerToUse);
-					}
-					else
-					{
-						output+=movLocalAddressToRegister(argInput,0,registerToUse);
-						output+=movRegisterToLocal(argOutput,registerToUse);
-					}
+					output+=compileCallAssignmentOperatorOfDynamicLocal(function,code,functionContext,localVariables,arg.localVariableIndex,argRvalue.localVariableIndex);
 				}
 				else
 				{
-					bool success=false;
-					output+=compileAssignment(function,code,t,functionContext,localVariables,arg,argRvalue,success);
-					if(!success)
+					if(passedByReference)
 					{
-						code.addError(t,__LINE__);
-						throw LogicError();
+						LocalVariable argInput=localVariables[argRvalue.localVariableIndex];
+						Type argumentType=argInput.type;
+						if(argumentType.name!=parameterType.name && argumentType.pointerLevels!=parameterType.pointerLevels)
+						{
+							code.addError(t,__LINE__);
+							throw LogicError();
+						}
+						
+						LocalVariable argOutput=localVariables[arg.localVariableIndex];
+						string registerToUse="rax";
+						if(argInput.isReference)
+						{
+							output+=movLocalToRegister(argInput,registerToUse);
+							output+=movRegisterToLocal(argOutput,registerToUse);
+						}
+						else
+						{
+							output+=movLocalAddressToRegister(argInput,0,registerToUse);
+							output+=movRegisterToLocal(argOutput,registerToUse);
+						}
+					}
+					else
+					{
+						bool success=false;
+						output+=compileAssignment(function,code,t,functionContext,localVariables,arg,argRvalue,success);
+						if(!success)
+						{
+							code.addError(t,__LINE__);
+							throw LogicError();
+						}
 					}
 				}
 				
@@ -5506,8 +5565,11 @@ class CodeTop
 								args.push_back(argRvalues[i].localVariableIndex);
 							}
 							
+							ExpressionValue returnValue;
 							expressionCode+=compileCallFunctionIndirect(function,code,functionContext,localVariables,functionAddressValue,
-								args,value,returnTypeIndexValue,attribute=="destructor");
+								args,returnValue,returnTypeIndexValue,attribute=="destructor");
+							
+							value=returnValue;
 						}
 						else
 						{
@@ -5635,7 +5697,7 @@ class CodeTop
 					{
 						if(v.type.name=="dynamic")
 						{
-							//TODO----
+							//TODO---- NOT IMPLEMENTED
 							code.addError(t,__LINE__);//----
 							throw LogicError();//----
 						}

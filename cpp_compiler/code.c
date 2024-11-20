@@ -40,6 +40,7 @@ fn __dynamic_destructor()(ptr(i64) dynPtr)
 				}
 			}
 		}
+		
 		__free(ptr(u8)(deref(dynPtr)));
 		deref(dynPtr)=0;
 	}
@@ -95,13 +96,20 @@ fn __dynamic_assign_internal()(ptr(i64) dynPtr,i64 rvalue,i64 rvalueType,i64 ass
 		{
 			if(assignDataReference)
 			{
+				if(ptr(i64)(deref(dynPtr))[1]==0)
+				{
+					i64 dataAddress=ptr(i64)(deref(dynPtr))[2];
+					i64 destructorAddress=ptr(i64)(__datatype_start[type])[3];
+					__call(destructorAddress,dataAddress);
+				}
+				
 				ptr(i64)(deref(dynPtr))[1]=1;
 				ptr(i64)(deref(dynPtr))[2]=rvalue;
 				return;
 			}
 			elif(u64(type)<u64(deref(__datatype_count)))
 			{
-				i64 dataAddress=deref(ptr(i64)(deref(dynPtr)+16));
+				i64 dataAddress=ptr(i64)(deref(dynPtr))[2];
 				if(dataAddress)
 				{
 					i64 assignmentAddress=ptr(i64)(__datatype_start[type])[4];
@@ -170,6 +178,10 @@ fn __dynamic_assign_internal()(ptr(i64) dynPtr,i64 rvalue,i64 rvalueType,i64 ass
 		}
 		
 		i64 dataAddress=ptr(i64)(deref(dynPtr))[2];
+		
+		i64 constructorAddress=ptr(i64)(__datatype_start[rvalueType])[2];
+		__call(constructorAddress,dataAddress);
+		
 		i64 assignmentAddress=ptr(i64)(__datatype_start[rvalueType])[4];
 		__call(assignmentAddress,dataAddress,rvalue);
 	}
@@ -378,6 +390,32 @@ fn __dynamic_cast_integer_to_integer()(ptr(i64) dynPtr,ptr(i64) outputPtr,i64 ou
 
 
 
+class __struct_stat
+{
+	u64 st_dev;
+	u64 st_ino;
+	u32 st_mode;
+	u32 st_nlink;
+	u32 st_uid;
+	u32 st_gid;
+	u64 st_rdev;
+	u64 __pad1;
+	i64 st_size;
+	i32 st_blksize;
+	i32 __pad2;
+	i64 st_blocks;
+	i64 st_atime;
+	u64 st_atime_nsec;
+	i64 st_mtime;
+	u64 st_mtime_nsec;
+	i64 st_ctime;
+	u64 st_ctime_nsec;
+	u32 __unused4;
+	u32 __unused5;
+}
+
+i64 __errno;
+
 fn __syscall(i64)(i64 syscallNumber,i64 arg0,i64 arg1,i64 arg2,i64 arg3,i64 arg4,i64 arg5)
 {
 	i64 returnValue;
@@ -385,6 +423,14 @@ fn __syscall(i64)(i64 syscallNumber,i64 arg0,i64 arg1,i64 arg2,i64 arg3,i64 arg4
 		"rax"(syscallNumber),
 		"rdi"(arg0),"rsi"(arg1),"rdx"(arg2),"r10"(arg3),"r8"(arg4),"r9"(arg5),
 		"=rax"(returnValue));
+	if(returnValue<0)
+	{
+		if(returnValue>-4096)
+		{
+			__errno=-returnValue;
+			returnValue=-1;
+		}
+	}
 	return returnValue;
 }
 
@@ -403,6 +449,14 @@ fn __open(i64)(ptr(u8) filename,i64 flags,i64 mode)
 fn __close(i64)(i64 fd)
 {
 	return __syscall(3,fd,0,0,0,0,0);
+}
+fn __stat(i64)(ptr(u8) filename,ptr(__struct_stat) statbuf)
+{
+	return __syscall(4,i64(filename),i64(statbuf),0,0,0,0);
+}
+fn __fstat(i64)(i64 fd,ptr(__struct_stat) statbuf)
+{
+	return __syscall(5,fd,i64(statbuf),0,0,0,0);
 }
 
 fn __mmap(ptr(u8))(ptr(u8) addr,i64 length,i64 prot,i64 flags,i64 fd,i64 offset)
@@ -898,6 +952,7 @@ fn __malloc(ptr(u8))(i64 size)
 {
 	return deref(PROCESS_MEMORY_ALLOCATION_SYSTEM).malloc(size);
 }
+
 fn __free(u8)(ptr(u8) pointer)
 {
 	return deref(PROCESS_MEMORY_ALLOCATION_SYSTEM).free(pointer);
@@ -905,6 +960,7 @@ fn __free(u8)(ptr(u8) pointer)
 
 fn __main(i64)(i64 argc,ptr(ptr(u8)) argv)
 {
+	__errno=0;
 	MemoryAllocationSystem memoryAllocationSystem;
 	if(!memoryAllocationSystem.initialize()) return 1;
 	PROCESS_MEMORY_ALLOCATION_SYSTEM=addressof(memoryAllocationSystem);
@@ -981,8 +1037,6 @@ class string
 	i64 internal_size;
 	i64 internal_reservedSize;
 	
-	
-	
 	fn constructor()()
 	{
 		internal_initialize();
@@ -1014,7 +1068,7 @@ class string
 		internal_checkInitialized();
 		ptr(u8) newData=internal_allocate(str.internal_size);
 		internal_copy(newData,str.internal_data,str.internal_size);
-		internal_free(internal_data);
+		if(internal_data!=nullptr) internal_free(internal_data);
 		internal_data=newData;
 		internal_reservedSize=str.internal_size;
 		internal_size=str.internal_size;
@@ -1133,7 +1187,7 @@ class string
 		if(newReservedSize<internal_size) return;
 		ptr(u8) newData=internal_allocate(newReservedSize);
 		internal_copy(newData,internal_data,internal_size);
-		internal_free(internal_data);
+		if(internal_data!=nullptr) internal_free(internal_data);
 		internal_data=newData;
 		internal_reservedSize=newReservedSize;
 	}
@@ -1214,15 +1268,303 @@ fn print()(string str)
 	printr(str.data());
 }
 
+class List
+{
+	ptr(dynamic) internal_data;
+	i64 internal_size;
+	i64 internal_reservedSize;
+	
+	fn constructor()()
+	{
+		internal_initialize();
+	}
+	fn destructor()()
+	{
+		internal_deinitialize();
+	}
+	fn operator(=)()(List other)
+	{
+		if(addressof(other)==addressof(this)) return;
+		internal_resize(other.internal_size);
+		internal_copy(internal_data,other.internal_data,internal_size);
+	}
+	
+	fn size(i64)()
+	{
+		return internal_size;
+	}
+	fn data(ptr(dynamic))()
+	{
+		return internal_data;
+	}
+	fn clear()()
+	{
+		internal_resize(0);
+	}
+	fn resize()(i64 newSize)
+	{
+		internal_resize(newSize);
+	}
+	fn capacity(i64)()
+	{
+		return internal_reservedSize;
+	}
+	fn reserve()(i64 newCapacity)
+	{
+		if(newCapacity>internal_reservedSize)
+		{
+			internal_setCapacity(newCapacity);
+		}
+	}
+	fn shrinkToFit()()
+	{
+		internal_setCapacity(internal_size);
+	}
+	fn add()(List other)
+	{
+		if(other.internal_data!=nullptr)
+		{
+			i64 oldSize=internal_size;
+			i64 otherSize=other.internal_size;
+			internal_resize(oldSize+otherSize);
+			internal_copy(internal_data+oldSize,other.internal_data,otherSize);
+		}
+	}
+	fn put()(dynamic element)
+	{
+		internal_resize(internal_size+1);
+		internal_data[internal_size-1]=element;
+	}
+	fn operator([])(ref(dynamic))(i64 index)
+	{
+		return internal_data[index];
+	}
+	fn at(ref(dynamic))(i64 index)
+	{
+		if(u64(index)>=u64(internal_size)) throw RuntimeException(r"Out of range of List");
+		return internal_data[index];
+	}
+	fn front(ref(dynamic))()
+	{
+		return at(0);
+	}
+	fn back(ref(dynamic))()
+	{
+		return at(internal_size-1);
+	}
+	
+	fn internal_resize()(i64 newSize)
+	{
+		if(newSize==internal_size) return;
+		if(newSize<internal_size)
+		{
+			internal_destruct(internal_data,newSize,internal_size);
+			internal_size=newSize;
+		}
+		else
+		{
+			if(newSize>internal_reservedSize)
+			{
+				i64 newReservedSize=newSize*2;
+				internal_setCapacity(newReservedSize);
+			}
+			internal_construct(internal_data,internal_size,newSize);
+			internal_size=newSize;
+		}
+	}
+	fn internal_setCapacity()(i64 newReservedSize)
+	{
+		if(newReservedSize==internal_reservedSize) return;
+		if(newReservedSize<internal_size) return;
+		if(newReservedSize==0)
+		{
+			if(internal_data!=nullptr)
+			{
+				internal_destruct(internal_data,0,internal_size);
+				internal_free(internal_data);
+			}
+			internal_clear();
+			return;
+		}
+		ptr(dynamic) newData=internal_allocate(newReservedSize);
+		internal_copy_memory(newData,internal_data,internal_size);
+		if(internal_data!=nullptr) internal_free(internal_data);
+		internal_data=newData;
+		internal_reservedSize=newReservedSize;
+	}
+	fn internal_initialize()()
+	{
+		internal_clear();
+	}
+	fn internal_deinitialize()()
+	{
+		if(internal_data!=nullptr)
+		{
+			internal_destruct(internal_data,0,internal_size);
+			internal_free(internal_data);
+		}
+		internal_clear();
+	}
+	fn internal_construct()(ptr(dynamic) array,i64 start,i64 end_)
+	{
+		i64 byteStart=start*sizeof(dynamic);
+		i64 byteEnd_=end_*sizeof(dynamic);
+		ptr(u8) address=ptr(u8)(array);
+		for(i64 i=byteStart;i<byteEnd_;i++)
+		{
+			address[i]=0;
+		}
+	}
+	fn internal_destruct()(ptr(dynamic) array,i64 start,i64 end_)
+	{
+		for(i64 i=start;i<end_;i++)
+		{
+			array[i].destructor();
+		}
+	}
+	fn internal_copy_memory()(ptr(dynamic) a,ptr(dynamic) b,i64 count)
+	{
+		i64 bytes=count*sizeof(dynamic);
+		ptr(u8) addressA=ptr(u8)(a);
+		ptr(u8) addressB=ptr(u8)(b);
+		for(i64 i=0;i<bytes;i++)
+		{
+			addressA[i]=addressB[i];
+		}
+	}
+	fn internal_copy()(ptr(dynamic) a,ptr(dynamic) b,i64 count)
+	{
+		for(i64 i=0;i<count;i++)
+		{
+			a[i]=b[i];
+		}
+	}
+	fn internal_clear()()
+	{
+		internal_data=nullptr;
+		internal_size=0;
+		internal_reservedSize=0;
+	}
+	fn internal_allocate(ptr(dynamic))(i64 number)
+	{
+		ptr(dynamic) array=ptr(dynamic)(__malloc(number*sizeof(dynamic)));
+		if(array==nullptr) throw RuntimeException(r"Not enough memory for List");
+		return array;
+	}
+	fn internal_free()(ptr(dynamic) array)
+	{
+		__free(ptr(u8)(array));
+	}
+}
+
+
+
+
+fn fileToString(string)(string filepath)
+{
+	i64 fd=__open(filepath.data(),0,0);
+	if(fd==-1)
+	{
+		throw "Could not open the file '"+filepath+"'";
+	}
+	
+	i64 fileSize=0;
+	{
+		__struct_stat stat;
+		if(__fstat(fd,addressof(stat))==-1)
+		{
+			throw "Could not get the size of the file '"+filepath+"'";
+		}
+		fileSize=stat.st_size;
+	}
+	
+	string str;
+	str.resize(fileSize);
+	
+	i64 ret=__read(fd,str.data(),fileSize);
+	if(ret==-1 || ret!=fileSize)
+	{
+		throw "Could not read from the file '"+filepath+"'";
+	}
+	
+	if(__close(fd)==-1)
+	{
+		throw "Could not close the file '"+filepath+"'";
+	}
+	
+	return str;
+}
+
+fn stringToFile()(string str,string filepath)
+{
+	i64 fd=__open(filepath.data(),0b1001000001,0b111111111);
+	if(fd==-1)
+	{
+		throw "Could not open the file '"+filepath+"'";
+	}
+	
+	i64 fileSize=str.size();
+	
+	i64 ret=__write(fd,str.data(),fileSize);
+	if(ret==-1 || ret!=fileSize)
+	{
+		throw "Could not write to the file '"+filepath+"'";
+	}
+	
+	if(__close(fd)==-1)
+	{
+		throw "Could not close the file '"+filepath+"'";
+	}
+}
+
+
+
+
+class Compiler
+{
+	//TODO----
+	
+	fn compile(string)(string inputCode)
+	{
+		//TODO----
+		
+		return "";//TODO----
+	}
+}
 
 fn main(i64)(i64 argc,ptr(ptr(u8)) argv)
 {
-	print("Hello world\n");
-	
-	i64 number=7;
-	number+=5;
-	
-	print("Number="+string(number)+"\n");
-	
+	try
+	{
+		List args;
+		for(i64 i=1;i<argc;i++)
+		{
+			args.put(string(argv[i]));
+		}
+		
+		if(args.size()!=2)
+		{
+			throw "Expected 2 arguments. Example: './bolgegc code.c code.asm'";
+		}
+		string inputFilepath=args[0];
+		string outputFilepath=args[1];
+		
+		Compiler compiler;
+		
+		string code=fileToString(inputFilepath);
+		
+		string assembly=compiler.compile(code);
+		
+		stringToFile(assembly,outputFilepath);
+	}
+	catch(dynamic e)
+	{
+		if(typeof(e)==string)
+		{
+			string str=e;
+			print(str+"\n");
+		}
+		else throw e;
+	}
 	return 0;
 }
